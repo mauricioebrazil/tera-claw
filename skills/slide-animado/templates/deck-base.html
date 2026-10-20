@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>O café que move o mundo</title>
+<!-- Fontes opcionais: se estiver sem internet, o fallback do sistema assume. -->
+<link rel="stylesheet" media="print" onload="this.media='all'" href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@500;700;800&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* ==================== DESIGN SYSTEM (troque SÓ este bloco para outra marca) ==================== */
+:root{
+  --bg:#0B0908;            /* fundo do palco */
+  --surface:#2C2724;       /* cartões e painéis */
+  --text:#F4F3EE;         /* texto principal */
+  --muted:#B1ADA1;         /* texto secundário */
+  --accent:#E26546;        /* cor de destaque */
+  --accent-2:#FFFCA3;      /* segunda cor de destaque */
+  --on-accent:#0B0908;     /* texto sobre a cor de destaque */
+  --font-title:'Fira Sans','Segoe UI',system-ui,-apple-system,Roboto,sans-serif;
+  --font-body:'Inter','Segoe UI',system-ui,-apple-system,Roboto,sans-serif;
+  --radius:32px;           /* raio dos cartões */
+  --pad:120px;             /* margem do slide (palco de 1920x1080) */
+  --ease:cubic-bezier(.65,0,.35,1);   /* transição e morph */
+  --ease-out:cubic-bezier(.16,1,.3,1);/* entradas (expo-out) */
+  --dur:700ms;             /* duração da transição entre telas */
+}
+/* ==================== FIM DO DESIGN SYSTEM ==================== */
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg);overflow:hidden;font-family:var(--font-body);color:var(--text);-webkit-tap-highlight-color:transparent;touch-action:pan-y}
+#stage{position:absolute;left:50%;top:50%;width:1920px;height:1080px;transform-origin:0 0;overflow:hidden;background:var(--bg)}
+.slide{position:absolute;inset:0;display:none}
+.slide.active,.slide.leaving{display:block}
+.slide.leaving{pointer-events:none}
+.bg{position:absolute;background:var(--surface)}
+.rest{position:absolute;inset:0}
+.abs{position:absolute}
+h1,h2{font-family:var(--font-title);font-weight:800;line-height:1.02;letter-spacing:-.02em}
+.sub{font-size:44px;color:var(--muted);line-height:1.3}
+.marca{position:absolute;display:flex;align-items:center;gap:14px;padding:16px 30px;border-radius:999px;background:var(--surface);font:700 30px var(--font-title);letter-spacing:.02em;white-space:nowrap}
+.marca i{width:16px;height:16px;border-radius:50%;background:var(--accent);display:block}
+ul.bullets{list-style:none;display:flex;flex-direction:column;gap:38px}
+ul.bullets li{font-size:54px;line-height:1.2;padding-left:56px;position:relative}
+ul.bullets li::before{content:"";position:absolute;left:0;top:.38em;width:20px;height:20px;border-radius:50%;background:var(--dot,var(--accent))}
+.card{position:absolute;border-radius:var(--radius);padding:44px;background:var(--surface);display:flex;flex-direction:column;justify-content:flex-end;gap:10px}
+.card b{font:800 96px/1 var(--font-title)}
+.card span{font-size:34px;line-height:1.25}
+.card.y{background:var(--accent-2);color:var(--on-accent)}
+.card.a{background:var(--accent);color:var(--on-accent)}
+.card p{font-size:30px;line-height:1.3;color:var(--muted)}
+.card.y p,.card.a p{color:inherit;opacity:.8}
+
+/* builds: cada avanço revela o próximo item */
+[data-build]{opacity:0;transform:translateY(28px);transition:opacity .55s var(--ease-out),transform .7s var(--ease-out)}
+[data-build].built{opacity:1;transform:none}
+.no-t [data-build]{transition:none!important}
+
+/* entrada dos elementos de cada tela (atraso definido por JS em --i) */
+@keyframes rise{from{opacity:0;transform:translateY(40px)}to{opacity:1;transform:none}}
+.slide.active [data-anim]{animation:rise .9s var(--ease-out) both;animation-delay:calc(var(--i,0)*90ms + 300ms)}
+
+/* HUD */
+#hud{position:absolute;left:0;right:0;bottom:0;height:70px;pointer-events:none}
+#num{position:absolute;right:56px;bottom:34px;font:600 26px var(--font-body);color:var(--muted);font-variant-numeric:tabular-nums}
+#bar{position:absolute;left:0;bottom:0;height:6px;background:var(--accent);width:0;transition:width var(--dur) var(--ease)}
+
+/* View Transitions: tempo e saída/entrada do conteúdo que não viaja */
+::view-transition-group(*){animation-duration:var(--dur);animation-timing-function:var(--ease)}
+::view-transition-old(*),::view-transition-new(*){animation-duration:var(--dur);animation-timing-function:var(--ease)}
+::view-transition-group(root){animation:none}
+::view-transition-old(root),::view-transition-new(root){animation:none;mix-blend-mode:normal}
+::view-transition-old(root){display:none}
+@keyframes out-l{to{opacity:0;transform:translateX(-60px)}}
+@keyframes out-r{to{opacity:0;transform:translateX(60px)}}
+::view-transition-old(rest-old){animation:out-l 360ms var(--ease) both}
+html[data-dir="back"]::view-transition-old(rest-old){animation-name:out-r}
+::view-transition-new(rest-new){animation:none}
+::view-transition-group(rest-old),::view-transition-group(rest-new){animation:none}
+/* formas e cartões: a imagem se estica até o tamanho final (cor e tamanho viajam juntos, sem sobreposição de telas) */
+::view-transition-old(*.vt-box),::view-transition-new(*.vt-box){width:100%;height:100%;object-fit:fill}
+/* texto que muda: o antigo some na primeira metade e o novo entra na segunda, enquanto o bloco viaja */
+@keyframes vt-out{to{opacity:0}}
+@keyframes vt-in{from{opacity:0}}
+::view-transition-old(*.vt-swap){animation:vt-out calc(var(--dur)*.4) var(--ease) both;mix-blend-mode:normal}
+::view-transition-new(*.vt-swap){animation:vt-in calc(var(--dur)*.4) var(--ease) calc(var(--dur)*.5) both;mix-blend-mode:normal}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms!important;animation-delay:0ms!important;transition-duration:.01ms!important}
+}
+
+/* modo impressão / PDF: abrir com ?print ou apertar P */
+@page{size:1920px 1080px;margin:0}
+body.print{overflow:visible;height:auto}
+body.print #stage{position:static;transform:none!important;width:1920px;height:auto;overflow:visible}
+body.print .slide{display:block;position:relative;width:1920px;height:1080px;overflow:hidden;break-after:page;background:var(--bg)}
+body.print [data-build]{opacity:1;transform:none}
+body.print [data-anim]{animation:none!important}
+body.print #hud{display:none}
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- ===== TELA 1: capa ===== -->
+  <section class="slide" data-title="Capa">
+    <div class="bg" data-morph="fundo" style="left:960px;top:120px;width:1100px;height:1100px;border-radius:50%;background:var(--accent)"></div>
+    <div class="marca" data-morph="marca" style="left:120px;top:90px"><i></i>Café &amp; Cia</div>
+    <div class="rest">
+      <p class="abs sub" data-anim style="left:120px;top:250px;width:900px;text-transform:uppercase;letter-spacing:.14em;font-size:30px;color:var(--accent)">Apresentação</p>
+      <p class="abs sub" data-anim style="left:120px;top:900px;width:900px">Uma xícara, mil histórias. Em quatro telas.</p>
+    </div>
+    <h1 class="abs" data-morph="titulo" style="left:120px;top:330px;width:960px;font-size:150px">O café que move o mundo</h1>
+  </section>
+
+  <!-- ===== TELA 2: bullets um por um + cartão ===== -->
+  <section class="slide" data-title="Origem">
+    <div class="bg" data-morph="fundo" style="left:0;top:0;width:700px;height:1080px;border-radius:0;background:var(--surface)"></div>
+    <div class="marca" data-morph="marca" style="left:120px;top:90px"><i></i>Café &amp; Cia</div>
+    <h2 class="abs" data-morph="titulo" style="left:120px;top:300px;width:480px;font-size:84px">De onde ele vem</h2>
+    <div class="rest">
+      <ul class="bullets abs" style="left:860px;top:150px;width:960px">
+        <li data-build>Nasceu na Etiópia, há mais de mil anos</li>
+        <li data-build>Chegou ao Brasil no século 18</li>
+        <li data-build>Hoje o Brasil é o maior produtor do mundo</li>
+      </ul>
+    </div>
+    <div class="card y" data-morph="card-1" style="left:860px;top:680px;width:960px;height:260px;flex-direction:row;align-items:center;gap:40px;justify-content:flex-start"><b>2,2 bi</b><span>de xícaras servidas<br>todos os dias</span></div>
+  </section>
+
+  <!-- ===== TELA 3: três cartões (card-1 viaja da tela anterior) ===== -->
+  <section class="slide" data-title="Preparos">
+    <div class="bg" data-morph="fundo" style="left:80px;top:60px;width:1760px;height:960px;border-radius:56px;background:var(--surface)"></div>
+    <div class="marca" data-morph="marca" style="left:140px;top:110px;background:var(--bg)"><i></i>Café &amp; Cia</div>
+    <h2 class="abs" data-morph="titulo" style="left:140px;top:220px;width:1400px;font-size:84px">Três jeitos de preparar</h2>
+    <div class="card y" data-morph="card-1" style="left:140px;top:430px;width:520px;height:480px"><b>Espresso</b><p>Pressão, rapidez e crema. Base de quase todo café de cafeteria.</p></div>
+    <div class="card a" data-build style="left:700px;top:430px;width:520px;height:480px"><b>Coado</b><p>Filtro de papel ou pano. Leve, limpo e o mais comum nas casas do Brasil.</p></div>
+    <div class="card" data-build style="left:1260px;top:430px;width:520px;height:480px;background:var(--bg)"><b>Prensa</b><p>Imersão total. Corpo cheio e sabor mais intenso.</p></div>
+  </section>
+
+  <!-- ===== TELA 4: fechamento ===== -->
+  <section class="slide" data-title="Fechamento">
+    <div class="bg" data-morph="fundo" style="left:0;top:0;width:1920px;height:1080px;border-radius:0;background:var(--accent)"></div>
+    <div class="marca" data-morph="marca" style="left:120px;top:90px;background:var(--on-accent);color:var(--accent-2)"><i style="background:var(--accent-2)"></i>Café &amp; Cia</div>
+    <h2 class="abs" data-morph="titulo" style="left:120px;top:250px;width:1500px;font-size:120px;color:var(--on-accent)">Bom café começa na escolha</h2>
+    <div class="rest">
+      <ul class="bullets abs" style="left:120px;top:620px;width:1500px;color:var(--on-accent);--dot:var(--on-accent);flex-direction:row;gap:60px">
+        <li data-build style="font-size:46px">Grão fresco</li>
+        <li data-build style="font-size:46px">Moagem na hora</li>
+        <li data-build style="font-size:46px">Água a 92 graus</li>
+      </ul>
+    </div>
+  </section>
+
+  <div id="hud"><div id="num"></div><div id="bar"></div></div>
+</div>
+
+<script>
+(()=>{
+const stage=document.getElementById('stage'), slides=[...document.querySelectorAll('.slide')];
+const num=document.getElementById('num'), bar=document.getElementById('bar');
+const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const printMode=/[?&]print/.test(location.search);
+let cur=0, step=0, busy=false, scale=1;
+const DUR=()=>parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dur'))||700;
+const EASE=()=>getComputedStyle(document.documentElement).getPropertyValue('--ease').trim()||'cubic-bezier(.65,0,.35,1)';
+
+/* escala 16:9 para caber em qualquer tela */
+function fit(){
+  scale=Math.min(innerWidth/1920,innerHeight/1080);
+  stage.style.transform=`translate(${-960*scale}px,${-540*scale}px) scale(${scale})`;
+}
+addEventListener('resize',fit); fit();
+
+const builds=s=>[...s.querySelectorAll('[data-build]')];
+function setBuilt(s,n,instant){
+  if(instant) stage.classList.add('no-t');
+  builds(s).forEach((b,i)=>b.classList.toggle('built',i<n));
+  if(instant){ void stage.offsetWidth; stage.classList.remove('no-t'); }
+}
+function stagger(s){ s.querySelectorAll('[data-anim]').forEach((e,i)=>e.style.setProperty('--i',i)); }
+function hud(){
+  num.textContent=(cur+1)+' / '+slides.length;
+  bar.style.width=((cur+1)/slides.length*100)+'%';
+  history.replaceState(null,'','#'+(cur+1));
+}
+
+/* ---------- MORPH: View Transitions API ---------- */
+const temFundo=e=>getComputedStyle(e).backgroundColor!=='rgba(0, 0, 0, 0)';
+function nameMorph(s,on,other){
+  s.querySelectorAll('[data-morph]').forEach(e=>{
+    e.style.viewTransitionName=on?'m-'+e.dataset.morph:'';
+    let k='';
+    if(on){
+      const o=other&&other.querySelector('[data-morph="'+e.dataset.morph+'"]');
+      k=temFundo(e)?'vt-box':(o&&o.textContent.trim()!==e.textContent.trim()?'vt-swap':'');
+    }
+    e.style.viewTransitionClass=k;
+  });
+  const r=s.querySelector('.rest'); if(r) r.style.viewTransitionName=on?on:'';
+}
+async function viaVT(from,to,dir){
+  document.documentElement.dataset.dir=dir>0?'fwd':'back';
+  nameMorph(from,'rest-old',to);
+  const vt=document.startViewTransition(()=>{
+    nameMorph(from,null); from.classList.remove('active');
+    to.classList.add('active'); stagger(to); nameMorph(to,'rest-new',from);
+  });
+  try{await vt.finished}catch(e){}
+  nameMorph(to,null);
+}
+
+/* ---------- MORPH: fallback FLIP com Web Animations API ---------- */
+const PROPS=['backgroundColor','borderRadius','color','fontSize'];
+function snap(e){
+  const r=e.getBoundingClientRect(), cs=getComputedStyle(e), o={r};
+  PROPS.forEach(p=>o[p]=cs[p]);
+  o.box=cs.backgroundColor!=='rgba(0, 0, 0, 0)';
+  return o;
+}
+async function viaFlip(from,to,dir){
+  const first={}; from.querySelectorAll('[data-morph]').forEach(e=>first[e.dataset.morph]=snap(e));
+  /* a tela antiga fica por cima só para o conteúdo sair; o que viaja some dela */
+  from.classList.add('leaving'); from.classList.remove('active');
+  from.querySelectorAll('[data-morph]').forEach(e=>{ if(to.querySelector('[data-morph="'+e.dataset.morph+'"]')) e.style.visibility='hidden'; });
+  to.classList.add('active'); stagger(to);
+  const dur=DUR(), ease=EASE(), anims=[];
+  const sx=dir>0?-60:60;
+  from.querySelectorAll('.rest, [data-morph]:not([style*="hidden"])').forEach(e=>{
+    anims.push(e.animate([{opacity:1,transform:'none'},{opacity:0,transform:`translateX(${sx}px)`}],{duration:360,easing:ease,fill:'forwards'}));
+  });
+  to.querySelectorAll('[data-morph]').forEach(e=>{
+    const f=first[e.dataset.morph];
+    if(!f){ anims.push(e.animate([{opacity:0},{opacity:1}],{duration:dur*.7,delay:dur*.3,easing:ease,fill:'backwards'})); return; }
+    const l=snap(e), k=scale;
+    const dx=(f.r.left-l.r.left)/k, dy=(f.r.top-l.r.top)/k;
+    const kf0={}, kf1={transform:'none'};
+    PROPS.forEach(p=>{kf0[p]=f[p];kf1[p]=l[p];});
+    if(f.box||l.box){ /* formas e cartões: escala (sem tocar no layout) */
+      kf0.transform=`translate(${dx}px,${dy}px) scale(${f.r.width/l.r.width||1},${f.r.height/l.r.height||1})`;
+      delete kf0.fontSize; delete kf1.fontSize;
+      e.style.transformOrigin='0 0';
+      Array.from(e.children).forEach(c=>anims.push(c.animate([{opacity:0},{opacity:0,offset:.45},{opacity:1}],{duration:dur,easing:ease})));
+    }else{ /* texto: desloca e muda o tamanho da fonte */
+      kf0.transform=`translate(${dx}px,${dy}px)`;
+      kf0.width=(f.r.width/k)+'px'; kf1.width=(l.r.width/k)+'px'; /* evita a quebra de linha mudar no meio do voo */
+    }
+    anims.push(e.animate([kf0,kf1],{duration:dur,easing:ease}));
+  });
+  await Promise.allSettled(anims.map(a=>a.finished));
+  anims.forEach(a=>a.cancel());
+  from.classList.remove('leaving');
+  from.querySelectorAll('[data-morph]').forEach(e=>e.style.visibility='');
+  to.querySelectorAll('[data-morph]').forEach(e=>e.style.transformOrigin='');
+}
+
+/* ---------- navegação ---------- */
+async function goto(n,dir,allBuilt){
+  if(busy||n<0||n>=slides.length||n===cur) return;
+  busy=true;
+  const from=slides[cur], to=slides[n];
+  setBuilt(to,allBuilt?builds(to).length:0,true);
+  step=allBuilt?builds(to).length:0;
+  cur=n; hud();
+  if(reduced){ from.classList.remove('active'); to.classList.add('active'); stagger(to); }
+  else if(document.startViewTransition) await viaVT(from,to,dir);
+  else await viaFlip(from,to,dir);
+  busy=false;
+}
+function next(){
+  const b=builds(slides[cur]);
+  if(step<b.length){ b[step++].classList.add('built'); return; }
+  goto(cur+1,1,false);
+}
+function prev(){
+  const b=builds(slides[cur]);
+  if(step>0){ b[--step].classList.remove('built'); return; }
+  goto(cur-1,-1,true);
+}
+function toggleFull(){
+  if(document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen().catch(()=>{});
+}
+
+addEventListener('keydown',e=>{
+  if(e.metaKey||e.ctrlKey||e.altKey) return;
+  const k=e.key;
+  if(['ArrowRight','ArrowDown','PageDown',' ','Enter'].includes(k)){e.preventDefault();next();}
+  else if(['ArrowLeft','ArrowUp','PageUp','Backspace'].includes(k)){e.preventDefault();prev();}
+  else if(k==='Home') goto(0,-1,false);
+  else if(k==='End') goto(slides.length-1,1,false);
+  else if(k==='f'||k==='F') toggleFull();
+  else if(k==='p'||k==='P') window.print();
+});
+let sx0=null,sy0=null,moved=false;
+addEventListener('touchstart',e=>{sx0=e.touches[0].clientX;sy0=e.touches[0].clientY;moved=false;},{passive:true});
+addEventListener('touchend',e=>{
+  if(sx0===null) return;
+  const dx=e.changedTouches[0].clientX-sx0, dy=e.changedTouches[0].clientY-sy0; sx0=null;
+  if(Math.abs(dx)>50&&Math.abs(dx)>Math.abs(dy)){ moved=true; dx<0?next():prev(); }
+},{passive:true});
+addEventListener('click',e=>{
+  if(moved){moved=false;return;}
+  if(e.target.closest('a,button')) return;
+  e.clientX<innerWidth*.2?prev():next();
+});
+
+/* início */
+if(printMode){ document.body.classList.add('print'); slides.forEach(s=>s.classList.add('active')); }
+else{
+  const h=parseInt(location.hash.slice(1),10);
+  if(h>=1&&h<=slides.length) cur=h-1;
+  slides[cur].classList.add('active'); stagger(slides[cur]); hud();
+}
+window.__deck={next,prev,goto:(n)=>goto(n,n>cur?1:-1,false),get cur(){return cur},mode:()=>document.startViewTransition?'view-transition':'flip',forceFlip:()=>{document.startViewTransition=undefined}};
+})();
+</script>
+</body>
+</html>

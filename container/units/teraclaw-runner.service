@@ -1,0 +1,46 @@
+[Unit]
+Description=Tera Claw runner (o processo que é o agente: abre o terminal do Claude/Codex e fala HTTP com o painel)
+After=network.target
+# O runner.json vem de uma montagem somente leitura do host (o agente não o reescreve).
+# Sem ele o agente ainda não foi configurado: a unidade fica quieta em vez de falhar.
+ConditionPathExists=/etc/teraclaw-runner/runner.json
+
+[Service]
+Type=simple
+User=agente
+Environment=HOME=/home/agente
+Environment=RUNNER_AGENT_FILE=/etc/teraclaw-runner/runner.json
+Environment=RUNNER_STATE_FILE=/home/agente/.plataforma/runner-state.json
+Environment=RUNNER_PORT=4300
+Environment=RUNNER_BIND=0.0.0.0
+Environment=RUNNER_LOG=/home/agente/.teraclaw/logs/runner.log
+Environment=RUNNER_TOKEN_FILE=/run/teraclaw/segredos/runner.token
+# Quantas sessões paralelas (cards) podem existir ao mesmo tempo. Sessão que dorme não gasta memória, e o
+# teto de capacidade do runner já barra acordar mais do que a máquina aguenta; por isso o limite é folgado.
+Environment=RUNNER_MAX_SESSOES_EXTRAS=8
+Environment=CLAUDE_CONFIG_DIR=/home/agente/.claude
+Environment=CODEX_HOME=/home/agente/.codex
+# O runner junta esta frase ao aviso de "ainda não fez login" que o dono vê.
+Environment="RUNNER_LOGIN_HINT=Abra o painel do agente e use o botão Entrar com a assinatura."
+# Cofre do agente (chaves de API). O "-" deixa a unidade subir mesmo sem o arquivo.
+EnvironmentFile=-/run/teraclaw/cofre/cofre.env
+# O runner precisa saber QUAIS variáveis vieram do cofre para entregá-las ao agente (as
+# herdadas ele tira). O cofre.env é do root e o runner roda como agente, então um passo
+# como root (o "+") copia só os NOMES para um arquivo legível. O "-" deixa o agente subir
+# se o passo falhar; o motivo fica no journal da unidade.
+Environment=TERACLAW_COFRE_ARQUIVO=/run/teraclaw-cofre-nomes
+ExecStartPre=+-/bin/bash /opt/teraclaw/app/scripts/cofre-nomes.sh /run/teraclaw/cofre/cofre.env /run/teraclaw-cofre-nomes
+# Catálogo dos provedores (Claude, Codex). O runner já o acha sozinho por este mesmo
+# caminho; fica explícito para não depender de onde o dist foi parar.
+Environment=TERACLAW_CATALOGO=/opt/teraclaw/app/providers/catalogo.json
+# Variáveis que o Claude Code põe no ambiente de quem o chama. Se o runner as herdasse,
+# o claude que ele abre se acharia filho de outra sessão e se comportaria como tal.
+UnsetEnvironment=CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH CLAUDE_PID
+WorkingDirectory=/home/agente
+ExecStartPre=/bin/mkdir -p /home/agente/.teraclaw/logs
+ExecStart=/usr/bin/node /opt/teraclaw/app/runner/dist/index.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

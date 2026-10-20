@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+. "$(dirname "$0")/_comum.sh"
+registrar "$@"
+[ -n "${TERACLAW_STUB_SS:-}" ] && printf '%s\n' "$TERACLAW_STUB_SS"
+exit 0

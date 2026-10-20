@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# DNS de mentira: devolve o conteudo de $STUB_ESTADO/dns-<host> (um IP), ou nada.
+echo "dig $*" >> "${STUB_LOG:?}"
+for a in "$@"; do
+    case "$a" in
+        @*|+*|A) ;;
+        *) [ -f "${STUB_ESTADO:?}/dns-$a" ] && cat "$STUB_ESTADO/dns-$a" ;;
+    esac
+done
+exit 0

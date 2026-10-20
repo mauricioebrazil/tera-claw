@@ -1,0 +1,168 @@
+#!/usr/bin/env -S python3 -I
+"""Extrai um .zip com segurança numa pasta NOVA ao lado dele.
+
+Uso: teraclaw-abrir-zip <arquivo.zip>
+
+Cria <nome>-extraido/ (se já existir, <nome>-extraido-1/, -2...). Nunca escreve numa
+pasta que já existe e nunca mexe no zip original. Antes de extrair qualquer byte, confere
+a listagem inteira e recusa o zip todo se encontrar:
+  - caminho absoluto, letra de unidade ou ".." (zip slip: escrever fora da pasta nova);
+  - link simbólico (poderia apontar para fora e ser seguido depois);
+  - mais arquivos que TERACLAW_ZIP_MAX_ARQUIVOS (padrão 10000);
+  - mais bytes descompactados que TERACLAW_ZIP_MAX_MB (padrão 1024);
+  - razão de compressão acima de TERACLAW_ZIP_MAX_RAZAO (padrão 200), por membro ou no total
+    (zip bomba).
+Saída final, em duas linhas: "pasta: <caminho>" e "arquivos: <N>". Falha sai com 1 (zip
+recusado) ou 2 (uso errado), com a causa em português no stderr.
+"""
+import os
+import stat
+import sys
+import zipfile
+from pathlib import Path, PurePosixPath
+
+
+def recusa(motivo, codigo=1):
+    print(f"ERRO: {motivo}", file=sys.stderr)
+    sys.exit(codigo)
+
+
+def limite(nome, padrao):
+    bruto = os.environ.get(nome, "")
+    if not bruto:
+        return padrao
+    try:
+        v = float(bruto)
+        if v <= 0:
+            raise ValueError
+        return v
+    except ValueError:
+        recusa(f"a variável {nome} vale {bruto!r}, que não é um número maior que zero. "
+               f"Corrija ou apague a variável para usar o padrão ({padrao}).", 2)
+
+
+def nome_inseguro(nome):
+    """Motivo pelo qual o nome do membro não pode ser extraído, ou None se está ok."""
+    if "\x00" in nome:
+        return "tem byte nulo no nome"
+    norm = nome.replace("\\", "/")
+    if norm.startswith("/"):
+        return "tem caminho absoluto"
+    if len(norm) >= 2 and norm[1] == ":":
+        return "começa com letra de unidade (estilo Windows)"
+    if ".." in PurePosixPath(norm).parts:
+        return 'tem ".." no caminho (tentaria escrever fora da pasta nova)'
+    return None
+
+
+def pasta_nova(zip_path):
+    base = zip_path.parent
+    nome = zip_path.stem
+    n = 0
+    while True:
+        sufixo = "-extraido" if n == 0 else f"-extraido-{n}"
+        alvo = base / (nome + sufixo)
+        try:
+            alvo.mkdir()  # sem exist_ok: se alguém criou no meio tempo, tenta o próximo
+            return alvo
+        except FileExistsError:
+            n += 1
+        except OSError as e:
+            recusa(f"não consegui criar {alvo} ({e.strerror}). Confira a permissão e o espaço "
+                   f"em disco da pasta {base}.")
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__.strip().split("\n\n")[0] + "\n\nUso: teraclaw-abrir-zip <arquivo.zip>",
+              file=sys.stderr)
+        sys.exit(2)
+    caminho = os.path.abspath(sys.argv[1])
+    zip_path = Path(caminho)
+    if not zip_path.is_file():
+        recusa(f"não achei o arquivo {caminho}. Confira o caminho que veio no texto da mensagem.", 2)
+
+    max_arq = int(limite("TERACLAW_ZIP_MAX_ARQUIVOS", 10000))
+    max_bytes = int(limite("TERACLAW_ZIP_MAX_MB", 1024) * 1024 * 1024)
+    max_razao = limite("TERACLAW_ZIP_MAX_RAZAO", 200)
+
+    try:
+        zf = zipfile.ZipFile(zip_path)
+    except zipfile.BadZipFile:
+        recusa(f"{zip_path.name} não é um zip válido (ou está corrompido). Peça para a pessoa "
+               "mandar de novo; se for .rar, .7z ou .tar, use a ferramenta do formato.")
+    except OSError as e:
+        recusa(f"não consegui abrir {caminho} ({e.strerror}).")
+
+    with zf:
+        membros = zf.infolist()
+        if len(membros) > max_arq:
+            recusa(f"{zip_path.name} tem {len(membros)} entradas e o limite é {max_arq} "
+                   "(TERACLAW_ZIP_MAX_ARQUIVOS). Nada foi extraído.")
+        total = 0
+        comprimido = 0
+        for m in membros:
+            motivo = nome_inseguro(m.filename)
+            if motivo:
+                recusa(f'a entrada "{m.filename}" {motivo}. O zip foi recusado inteiro e nada '
+                       "foi extraído; desconfie de quem mandou.")
+            modo = m.external_attr >> 16
+            if stat.S_ISLNK(modo):
+                recusa(f'a entrada "{m.filename}" é um link simbólico, que pode apontar para '
+                       "fora da pasta. O zip foi recusado inteiro e nada foi extraído.")
+            if m.is_dir():
+                continue
+            total += m.file_size
+            comprimido += m.compress_size
+            if m.file_size > 1024 * 1024 and m.file_size > max_razao * max(m.compress_size, 1):
+                recusa(f'a entrada "{m.filename}" descompacta {m.file_size} bytes a partir de '
+                       f"{m.compress_size} (razão acima de {max_razao:g}, típica de zip bomba). "
+                       "Nada foi extraído; suba a razão em TERACLAW_ZIP_MAX_RAZAO só se confiar no zip.")
+            if total > max_bytes:
+                recusa(f"{zip_path.name} descompacta mais de {max_bytes // 1048576} MB "
+                       "(TERACLAW_ZIP_MAX_MB). Nada foi extraído.")
+        if total > 1024 * 1024 and total > max_razao * max(comprimido, 1):
+            recusa(f"{zip_path.name} descompacta {total} bytes a partir de {comprimido} "
+                   f"(razão acima de {max_razao:g}, típica de zip bomba). Nada foi extraído.")
+
+        destino = pasta_nova(zip_path)
+        raiz = destino.resolve()
+        feitos = 0
+        # Teto do TOTAL descompactado, contado no que sai de fato (o tamanho declarado
+        # no zip pode mentir, e um teto por entrada deixaria N entradas somarem N vezes o limite).
+        restante = max_bytes
+        for m in membros:
+            alvo = (raiz / m.filename.replace("\\", "/")).resolve()
+            # Segunda trava, depois da listagem: o caminho final tem que ficar dentro da pasta nova.
+            if alvo != raiz and raiz not in alvo.parents:
+                recusa(f'a entrada "{m.filename}" resolveria para {alvo}, fora de {raiz}. '
+                       f"Parei; o que já saiu ficou em {destino} e pode ser apagado.")
+            if m.is_dir():
+                alvo.mkdir(parents=True, exist_ok=True)
+                continue
+            alvo.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with zf.open(m) as origem, open(alvo, "xb") as saida:
+                    while True:
+                        bloco = origem.read(1024 * 1024)
+                        if not bloco:
+                            break
+                        restante -= len(bloco)
+                        if restante < 0:
+                            recusa(f'o zip passou do limite total de '
+                                   f"{max_bytes // 1048576} MB ao descompactar (o tamanho "
+                                   f"declarado no zip mentia). Parei; apague {destino}.")
+                        saida.write(bloco)
+            except FileExistsError:
+                recusa(f'a entrada "{m.filename}" repete um nome já extraído (ou diferencia '
+                       f"só maiúsculas). Parei em {destino}; não sobrescrevi nada.")
+            except (OSError, zipfile.BadZipFile, RuntimeError) as e:
+                recusa(f'falhei ao extrair "{m.filename}" ({e}). Se o zip tem senha, peça a '
+                       f"senha a quem mandou. O que saiu ficou em {destino}.")
+            feitos += 1
+
+    print(f"pasta: {destino}")
+    print(f"arquivos: {feitos}")
+
+
+main()

@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+# `teraclaw atualizar`: a atualizacao nao pode perder nem mudar nada que e do dono.
+#
+# Monta, numa raiz falsa, uma instalacao de verdade (o install.sh real, rodando de um clone git
+# real com um "GitHub" local), cria dois agentes e enche tudo de dados de aluno: chaves no
+# web.env, memoria, conversas, cofre, uploads, identidade personalizada, rotina, CLAUDE.md do
+# Admin personalizado. Depois atualiza e REPROVA se qualquer um desses arquivos sumir ou mudar.
+# Cobre tambem: pre-checagem de alteracao local, --simular, backup, repeticao sem novidade,
+# --voltar e a conferencia que pega um instalador que apaga uma chave.
+set -uo pipefail
+# shellcheck source=tests/cli/_comum.sh
+. "$(dirname "$0")/_comum.sh"
+preparar
+
+# Os stubs do instalador completam o que a CLI nao usa (apt-get, dpkg, ufw...). Os da CLI vem
+# primeiro no PATH (podman, systemctl, curl com estado proprio).
+PATH="$AQUI/stubs:$REPO/tests/instalador/stubs:$PATH"
+export PATH
+export TERACLAW_STUB_LOG="$TMP/instalador.log" TERACLAW_STUB_ESTADO="$TMP/estado-instalador"
+export TERACLAW_PULAR_CHECAGENS=1 TERACLAW_ESPERA_CERT=5 TERACLAW_ATUALIZAR_LIVRE_MIN_MB=1
+export TERACLAW_SENHA_HASH_CMD="$REPO/tests/instalador/senha-hash-falso.sh"
+export GIT_AUTHOR_NAME=teste GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=teste GIT_COMMITTER_EMAIL=t@t
+: >"$TERACLAW_STUB_LOG"
+RAIZ="$TERACLAW_RAIZ"
+ADMIN="$RAIZ/opt/teraclaw/admin"
+BACKUPS="$RAIZ/var/backups/teraclaw"
+
+# --- o "GitHub" e o clone ---------------------------------------------------------------------
+TRAB="$TMP/trabalho"; ORIGEM="$TMP/origem.git"; CLONE="$TMP/clone"
+mkdir -p "$TRAB/bin" "$TRAB/web" "$TRAB/runner" "$TRAB/container" "$TRAB/templates/admin" \
+    "$TRAB/skills/criar-agente" "$TRAB/skills/trocar-dominio" "$TRAB/scripts/dgchat-mcp"
+cp "$REPO/install.sh" "$TRAB/install.sh"
+cp -r "$REPO/lib" "$TRAB/lib"
+printf '#!/bin/sh\necho teraclaw falso\n' >"$TRAB/bin/teraclaw"; chmod +x "$TRAB/bin/teraclaw"
+echo 'console.log("web")' >"$TRAB/web/server.js"
+echo '{"name":"web"}' >"$TRAB/web/package.json"
+echo '{"name":"runner"}' >"$TRAB/runner/package.json"
+echo 'FROM scratch' >"$TRAB/container/Containerfile"
+echo '# Admin (Claude) v1' >"$TRAB/templates/admin/CLAUDE.md"
+echo '# Admin (Codex) v1' >"$TRAB/templates/admin/AGENTS.md"
+echo '# criar-agente' >"$TRAB/skills/criar-agente/SKILL.md"
+echo '# trocar-dominio' >"$TRAB/skills/trocar-dominio/SKILL.md"
+echo '//' >"$TRAB/scripts/dgchat-mcp/server.mjs"
+echo 'Tera Claw de mentira' >"$TRAB/README.md"
+git -C "$TRAB" init -q -b main
+git -C "$TRAB" add -A
+git -C "$TRAB" commit -q -m v1
+git clone -q --bare "$TRAB" "$ORIGEM"
+git -C "$TRAB" remote add origin "$ORIGEM"
+git -C "$TRAB" fetch -q origin
+git -C "$TRAB" branch -q --set-upstream-to=origin/main main
+git clone -q "$ORIGEM" "$CLONE"
+COMMIT_V1="$(git -C "$CLONE" rev-parse HEAD)"
+
+# --- instalacao v1 (o install.sh de verdade) -------------------------------------------------
+mkdir -p "$RAIZ/var/lib/teraclaw/web"
+echo ok >"$RAIZ/var/lib/teraclaw/web/admin-saudado"   # sem o recado de primeiro boot, que nao e o assunto
+echo active >"$STUB_ESTADO/svc-caddy"; echo active >"$STUB_ESTADO/svc-teraclaw-web"; echo active >"$STUB_ESTADO/svc-teraclaw-admin"
+if printf '%s\n' 'uma-frase-comprida-123' | bash "$CLONE/install.sh" --usuario maria --provedor claude --dominio teste.exemplo.org >"$TMP/instalar.txt" 2>&1; then
+    ok "install.sh v1 instalou o Admin no clone"
+else
+    mal "install.sh v1 falhou: $(tail -n 5 "$TMP/instalar.txt" | tr '\n' ' ')"
+fi
+afirma "o teraclaw.env anota onde esta o clone" grep -qx "TERACLAW_REPO=$CLONE" "$ETC/teraclaw.env"
+afirma "o teraclaw.env anota o commit instalado" grep -qx "TERACLAW_COMMIT=$COMMIT_V1" "$ETC/teraclaw.env"
+criar_agente ana --nome "Ana" --dono "Marta"
+criar_agente beto --nome "Beto" --dono "Marta"
+igual "dois agentes criados" "2" "$(jq '[.agentes[] | select(.tipo=="agente")] | length' "$ETC/agentes.json")"
+
+# --- dados do aluno -----------------------------------------------------------------------------
+printf 'GROQ_API_KEY=gsk_chave_da_marta\nELEVENLABS_API_KEY=el_chave\nQUALQUER_COISA=1\n' >>"$ETC/web.env"
+printf 'LINHA_DA_MARTA=oi\n' >>"$ETC/teraclaw.env"
+for s in ana beto; do
+    casa="$LIB/agentes/$s"; h="$casa/home"
+    printf '# Memoria de %s\nA Marta prefere cafe sem acucar.\n' "$s" >"$h/MEMORY.md"
+    mkdir -p "$h/.claude/projects/-home-agente" "$h/uploads" "$h/.teraclaw"
+    printf '{"msg":"conversa de %s com a Marta"}\n' "$s" >"$h/.claude/projects/-home-agente/sessao1.jsonl"
+    printf 'OPENAI_API_KEY=sk-%s-da-marta\n' "$s" >"$casa/cofre/cofre.env"
+    printf 'conteudo do contrato de %s\n' "$s" >"$h/uploads/contrato com espaco.txt"
+    printf '# Identidade personalizada\nVoce e %s, a assistente da Marta.\n' "$s" >"$h/IDENTITY.md"
+    printf '# Personalidade\nAlegre e direta.\n' >"$h/PERSONALITY.md"
+    printf '{"crons":[{"name":"lembrete-agua","calendar":"*-*-* 09:00:00"}]}\n' >"$h/.teraclaw/self-crons.json"
+done
+printf '# Meu Admin personalizado\nSempre me chame de Dona Marta.\n' >"$ADMIN/CLAUDE.md"
+mkdir -p "$ADMIN/uploads" "$RAIZ/root/.claude/projects/-opt-teraclaw-admin"
+printf 'pdf da marta\n' >"$ADMIN/uploads/proposta.pdf"
+printf '{"msg":"conversa do admin"}\n' >"$RAIZ/root/.claude/projects/-opt-teraclaw-admin/a.jsonl"
+printf '{"c_ana":{"sessao":"abc"}}\n' >"$LIB/web/sessoes.json"
+
+# Os arquivos que NAO PODEM mudar numa atualizacao (o web.env e o teraclaw.env ganham linhas, mas
+# as de antes ficam: conferidos linha a linha mais abaixo).
+fotografar() {
+    local f
+    for f in "$ETC"/runner/*.token "$ETC"/proxy/*.segredo "$ETC/registro.tsv" "$ETC/portas.tsv" \
+             "$LIB"/agentes/*/cofre/cofre.env "$LIB"/agentes/*/home/MEMORY.md "$LIB"/agentes/*/home/IDENTITY.md \
+             "$LIB"/agentes/*/home/PERSONALITY.md "$LIB"/agentes/*/home/.teraclaw/self-crons.json \
+             "$LIB"/agentes/*/home/.claude/projects/-home-agente/sessao1.jsonl "$LIB"/agentes/*/home/uploads/* \
+             "$ADMIN/CLAUDE.md" "$ADMIN"/uploads/* "$RAIZ"/root/.claude/projects/-opt-teraclaw-admin/a.jsonl \
+             "$LIB/web/sessoes.json"; do
+        if [ -f "$f" ]; then printf '%s  %s\n' "$(sha256sum <"$f" | cut -d' ' -f1)" "${f#"$RAIZ"}"; else printf 'AUSENTE  %s\n' "${f#"$RAIZ"}"; fi
+    done
+}
+linhas_do_aluno_ok() {
+    grep -qx 'GROQ_API_KEY=gsk_chave_da_marta' "$ETC/web.env" && grep -qx 'ELEVENLABS_API_KEY=el_chave' "$ETC/web.env" \
+        && grep -qx 'QUALQUER_COISA=1' "$ETC/web.env" && grep -q "^TERACLAW_PANEL_PASSWORD_HASH='scrypt" "$ETC/web.env" \
+        && grep -qx 'TERACLAW_PANEL_USER=maria' "$ETC/web.env" && grep -qx 'LINHA_DA_MARTA=oi' "$ETC/teraclaw.env" \
+        && grep -qx 'TERACLAW_DOMINIO=teste.exemplo.org' "$ETC/teraclaw.env"
+}
+fotografar >"$TMP/antes.txt"
+afirma "a fotografia pegou os arquivos do aluno" test "$(grep -vc AUSENTE "$TMP/antes.txt")" -ge 20
+igual "nenhum arquivo do aluno falta antes de comecar" "0" "$(grep -c AUSENTE "$TMP/antes.txt")"
+cp "$ETC/agentes.json" "$TMP/agentes-antes.json"
+
+# --- o GitHub ganha a versao 2 ---------------------------------------------------------------------
+echo '# Admin (Claude) v2: leia docs/ATUALIZAR.md' >"$TRAB/templates/admin/CLAUDE.md"
+echo '# Admin (Codex) v2: leia docs/ATUALIZAR.md' >"$TRAB/templates/admin/AGENTS.md"
+echo 'novidade' >"$TRAB/NOVIDADE.md"
+echo '# v2' >>"$TRAB/lib/firewall.sh"
+git -C "$TRAB" add -A; git -C "$TRAB" commit -q -m v2; git -C "$TRAB" push -q origin main
+COMMIT_V2="$(git -C "$TRAB" rev-parse HEAD)"
+
+echo "pre-checagem: alteracao local no clone"
+echo 'mexi aqui' >>"$CLONE/README.md"
+: >"$STUB_LOG"
+teraclaw atualizar >"$TMP/o1.txt" 2>&1; rc=$?
+igual "com alteracao local o comando para (codigo 1)" "1" "$rc"
+afirma "diz o arquivo alterado" grep -q 'README.md' "$TMP/o1.txt"
+afirma "explica como guardar de lado" grep -q 'git stash push -u -m teraclaw-atualizar-' "$TMP/o1.txt"
+afirma "oferece o --forcar-local" grep -q -- '--forcar-local' "$TMP/o1.txt"
+nega "nao fez backup" test -e "$BACKUPS"
+nega "nao mexeu em container" grep -q '^podman \(stop\|rm\|build\|create\)' "$STUB_LOG"
+igual "o clone continua no commit antigo" "$COMMIT_V1" "$(git -C "$CLONE" rev-parse HEAD)"
+afirma "a alteracao do aluno continua no clone" grep -q 'mexi aqui' "$CLONE/README.md"
+fotografar >"$TMP/depois.txt"
+igual "arquivos do aluno intactos" "" "$(diff "$TMP/antes.txt" "$TMP/depois.txt")"
+
+echo "simular"
+teraclaw atualizar --simular --forcar-local >"$TMP/o2.txt" 2>&1; rc=$?
+igual "--simular termina com 0" "0" "$rc"
+afirma "avisa que e simulacao" grep -q 'SIMULACAO' "$TMP/o2.txt"
+afirma "mostra o stash que faria" grep -q '\[ensaio\] guardaria isso num stash' "$TMP/o2.txt"
+nega "simular nao faz backup" test -e "$BACKUPS"
+nega "simular nao mexe em container" grep -q '^podman \(stop\|rm\|build\|create\)' "$STUB_LOG"
+igual "simular nao puxa nada" "$COMMIT_V1" "$(git -C "$CLONE" rev-parse HEAD)"
+afirma "a alteracao do aluno continua no clone" grep -q 'mexi aqui' "$CLONE/README.md"
+nega "simular nao agenda reinicio" grep -q '^systemd-run' "$STUB_LOG"
+fotografar >"$TMP/depois.txt"
+igual "arquivos do aluno intactos" "" "$(diff "$TMP/antes.txt" "$TMP/depois.txt")"
+afirma "simular com novidade mostra o relatorio O que muda" grep -q 'O QUE MUDA NA ATUALIZACAO' "$TMP/o2.txt"
+afirma "simular avisa que a de verdade vai exigir --ok-do-dono" grep -q 'vai exigir --ok-do-dono' "$TMP/o2.txt"
+git -C "$CLONE" checkout -q README.md
+
+echo "o que muda: sem o ok do dono a atualizacao de verdade nao segue"
+: >"$STUB_LOG"
+teraclaw atualizar >"$TMP/om1.txt" 2>&1; rc=$?
+nega "com novidade e sem --ok-do-dono sai com erro" test "$rc" -eq 0
+afirma "diz que ainda nao tem o ok do dono" grep -q 'eu ainda nao tenho o ok do dono' "$TMP/om1.txt"
+nega "nao criou backup" test -e "$BACKUPS"
+nega "nao mexeu em container" grep -q '^podman \(stop\|rm\|build\|create\)' "$STUB_LOG"
+igual "o clone continua no commit antigo" "$COMMIT_V1" "$(git -C "$CLONE" rev-parse HEAD)"
+REL="$(sed -n 's/.*O relatorio esta em \(.*o-que-muda\.txt\)\..*/\1/p' "$TMP/om1.txt" | head -n 1)"
+afirma "a saida traz o caminho do relatorio" test -n "$REL"
+afirma "o arquivo do relatorio existe" test -s "$REL"
+afirma "o relatorio lista o commit novo (v2)" grep -q ' v2$' "$REL"
+afirma "lib/firewall.sh aparece em Pontos de atencao" bash -c "sed -n '/Pontos de atencao/,\$p' '$REL' | grep -q 'lib/firewall.sh: .*rede e isolamento'"
+afirma "o relatorio termina com a instrucao do ok" grep -q -- 'sudo teraclaw atualizar --ok-do-dono --segundo-plano' "$REL"
+
+echo "atualizar de verdade"
+echo imagem-v2 >"$STUB_ESTADO/imagem-id"   # a imagem "mudou": os containers velhos precisam ser recriados
+: >"$STUB_LOG"
+teraclaw atualizar --ok-do-dono >"$TMP/o3.txt" 2>&1; rc=$?
+igual "atualizar sai com 0" "0" "$rc"
+[ "$rc" -eq 0 ] || sed 's/^/      | /' "$TMP/o3.txt" | tail -n 30
+afirma "diz que concluiu" grep -q 'Atualizacao concluida' "$TMP/o3.txt"
+afirma "diz como voltar atras" grep -q 'sudo teraclaw atualizar --voltar ' "$TMP/o3.txt"
+igual "o clone foi para o commit novo" "$COMMIT_V2" "$(git -C "$CLONE" rev-parse HEAD)"
+fotografar >"$TMP/depois.txt"
+igual "TODOS os arquivos do aluno intactos (memoria, conversas, cofre, uploads, identidade, rotina, Admin)" "" "$(diff "$TMP/antes.txt" "$TMP/depois.txt")"
+afirma "linhas do aluno no web.env e no teraclaw.env sobreviveram" linhas_do_aluno_ok
+afirma "o teraclaw.env passou a anotar o commit novo" grep -qx "TERACLAW_COMMIT=$COMMIT_V2" "$ETC/teraclaw.env"
+afirma "agentes.json: os dois agentes iguais aos de antes" bash -c "[ \"\$(jq -cS '[.agentes[] | select(.tipo==\"agente\")] | sort_by(.slug)' '$ETC/agentes.json')\" = \"\$(jq -cS '[.agentes[] | select(.tipo==\"agente\")] | sort_by(.slug)' '$TMP/agentes-antes.json')\" ]"
+afirma "agentes.json: o Admin continua registrado" jq -e '[.agentes[] | select(.slug=="admin")] | length == 1' "$ETC/agentes.json"
+igual "CLAUDE.md personalizado do Admin nao foi trocado" "personalizado" "$(grep -q 'Dona Marta' "$ADMIN/CLAUDE.md" && echo personalizado)"
+afirma "a versao nova do CLAUDE.md ficou ao lado (.novo)" grep -q 'v2: leia docs/ATUALIZAR.md' "$ADMIN/CLAUDE.md.novo"
+afirma "o AGENTS.md que veio de fabrica foi atualizado" grep -q 'v2: leia docs/ATUALIZAR.md' "$ADMIN/AGENTS.md"
+afirma "o aviso do CLAUDE.md personalizado aparece" grep -q 'foi personalizado' "$TMP/o3.txt"
+
+B1="$(find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+igual "um backup datado foi criado" "1" "$(find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+igual "a pasta do backup e so do root (700)" "700" "$(stat -c %a "$B1")"
+for a in config admin dados transcricoes-admin; do
+    afirma "o backup tem $a.tar.gz que abre" tar -tzf "$B1/$a.tar.gz"
+done
+afirma "o backup tem o MANIFESTO.txt" test -s "$B1/MANIFESTO.txt"
+afirma "o manifesto guarda o commit de antes" grep -qx "commit=$COMMIT_V1" "$B1/MANIFESTO.txt"
+afirma "o manifesto lista os agentes" grep -qx 'agentes=ana,beto' "$B1/MANIFESTO.txt"
+afirma "o manifesto traz os sha256" grep -q 'etc/teraclaw/web.env' "$B1/MANIFESTO.txt"
+afirma "o backup guarda o web.env com a chave" bash -c "tar -xzOf '$B1/config.tar.gz' etc/teraclaw/web.env | grep -qx 'GROQ_API_KEY=gsk_chave_da_marta'"
+afirma "o backup guarda a memoria da Ana" bash -c "tar -xzOf '$B1/dados.tar.gz' var/lib/teraclaw/agentes/ana/home/MEMORY.md | grep -q 'cafe sem acucar'"
+afirma "o backup guarda o cofre do Beto" bash -c "tar -xzOf '$B1/dados.tar.gz' var/lib/teraclaw/agentes/beto/cofre/cofre.env | grep -qx 'OPENAI_API_KEY=sk-beto-da-marta'"
+afirma "o backup guarda o CLAUDE.md personalizado do Admin" bash -c "tar -xzOf '$B1/admin.tar.gz' opt/teraclaw/admin/CLAUDE.md | grep -q 'Dona Marta'"
+afirma "o backup guarda a conversa do Admin" bash -c "tar -xzOf '$B1/transcricoes-admin.tar.gz' root/.claude/projects/-opt-teraclaw-admin/a.jsonl | grep -q 'conversa do admin'"
+
+afirma "reconstruiu a imagem" grep -q '^podman build ' "$STUB_LOG"
+for s in ana beto; do
+    afirma "$s: container parado e removido" bash -c "grep -q '^podman stop -t 60 teraclaw-$s' '$STUB_LOG' && grep -q '^podman rm teraclaw-$s' '$STUB_LOG'"
+    afirma "$s: container criado de novo com a mesma casa" grep -q "^podman create .*--name teraclaw-$s .*--volume $LIB/agentes/$s/home:/home/agente:rw" "$STUB_LOG"
+    afirma "$s: o cofre continua montado" grep -q "^podman create .*--name teraclaw-$s .*--volume $LIB/agentes/$s/cofre:/run/teraclaw/cofre:ro" "$STUB_LOG"
+    afirma "$s: guardou as rotinas antes de trocar" grep -q "^podman exec teraclaw-$s sh -c cd /etc/systemd/system" "$STUB_LOG"
+done
+igual "so dois containers removidos" "2" "$(grep -c '^podman rm ' "$STUB_LOG")"
+nega "nunca apagou volume nem rede" grep -q '^podman \(volume rm\|network rm\|system prune\|image rm\|rmi\)' "$STUB_LOG"
+afirma "agendou o reinicio do Admin desacoplado (20 s) com o roteiro que avisa o resultado" grep -q '^systemd-run --on-active=20 --unit=teraclaw-admin-restart-.* bash .*lib/reiniciar-admin.sh .*\.resumo\.txt .*\.log .*runner/admin.token' "$STUB_LOG"
+nega "o token do Admin nao aparece na linha de comando do agendamento" grep -q "$(cat "$ETC/runner/admin.token")" "$STUB_LOG"
+RESUMO="$(find "$RAIZ/var/log/teraclaw" -name '*.resumo.txt' | head -n 1)"
+afirma "o resumo foi gravado em arquivo antes do reinicio" test -s "$RESUMO"
+afirma "o resumo traz versao antiga -> nova, backup e como voltar" bash -c "grep -q 'Atualizacao concluida' '$RESUMO' && grep -q -- '-> ' '$RESUMO' && grep -q 'Backup:' '$RESUMO' && grep -q -- '--voltar' '$RESUMO' && grep -q 'ana, beto' '$RESUMO'"
+afirma "o resumo mostra o commit de antes certo (${COMMIT_V1:0:10})" grep -q "(${COMMIT_V1:0:10}) ->" "$RESUMO"
+nega "nao reiniciou o Admin direto (ele pode ser quem roda o comando)" grep -q '^systemctl restart teraclaw-admin' "$STUB_LOG"
+ult="$(grep -n '^systemd-run' "$STUB_LOG" | tail -n 1 | cut -d: -f1)"; bld="$(grep -n '^podman build' "$STUB_LOG" | tail -n 1 | cut -d: -f1)"
+afirma "o reinicio do Admin e o ultimo passo (depois do build)" test "${ult:-0}" -gt "${bld:-1}"
+
+echo "o roteiro que reinicia o Admin e avisa o resultado"
+: >"$STUB_LOG"; rm -f "$STUB_LOG.curl-stdin" "$STUB_LOG.curl-config"
+bash "$REPO/lib/reiniciar-admin.sh" "$RESUMO" "$TMP/reinicio.log" "$ETC/runner/admin.token" >/dev/null 2>&1; rc=$?
+igual "reiniciar-admin.sh sai com 0" "0" "$rc"
+afirma "reinicia o servico do Admin" grep -q '^systemctl restart teraclaw-admin' "$STUB_LOG"
+afirma "espera o /api/saude do Admin" grep -q 'curl .*127.0.0.1:4300/api/saude' "$STUB_LOG"
+afirma "avisa o Admin por POST em /api/agents/admin/input" grep -q 'curl .*-X POST .*http://127.0.0.1:4300/api/agents/admin/input' "$STUB_LOG"
+afirma "o aviso cita o resumo e pede que conte ao dono" bash -c "grep -q 'resumo.txt' '$STUB_LOG.curl-stdin' && grep -q 'conte ao dono' '$STUB_LOG.curl-stdin' && grep -qF 'submit' '$STUB_LOG.curl-stdin'"
+afirma "o token vai no arquivo de configuracao do curl" grep -q "Authorization: Bearer $(cat "$ETC/runner/admin.token")" "$STUB_LOG.curl-config"
+nega "o token nunca aparece na linha de comando (STUB_LOG)" grep -q "$(cat "$ETC/runner/admin.token")" "$STUB_LOG"
+nega "o token nunca aparece no log do roteiro" grep -q "$(cat "$ETC/runner/admin.token")" "$TMP/reinicio.log"
+touch "$STUB_ESTADO/curl-falha"
+: >"$STUB_LOG"
+TERACLAW_ESPERA_ADMIN=2 bash "$REPO/lib/reiniciar-admin.sh" "$RESUMO" "$TMP/reinicio2.log" "$ETC/runner/admin.token" >/dev/null 2>&1; rc=$?
+rm -f "$STUB_ESTADO/curl-falha"
+igual "se o Admin nao volta, sai com erro" "1" "$rc"
+afirma "o log diz que ele nao respondeu e onde esta o resumo" grep -q 'nao respondeu em 2s.*resumo' "$TMP/reinicio2.log"
+nega "sem o Admin de pe, nao tenta o POST" grep -q 'X POST' "$STUB_LOG"
+
+echo "repetir sem novidade"
+: >"$STUB_LOG"
+teraclaw atualizar >"$TMP/o4.txt" 2>&1; rc=$?
+igual "repetir sai com 0" "0" "$rc"
+afirma "diz que ja estava na versao mais nova" grep -q 'ja estava na versao mais nova' "$TMP/o4.txt"
+igual "nenhum container recriado de novo (a imagem e a mesma)" "0" "$(grep -c '^podman rm ' "$STUB_LOG")"
+fotografar >"$TMP/depois.txt"
+igual "arquivos do aluno intactos" "" "$(diff "$TMP/antes.txt" "$TMP/depois.txt")"
+afirma "sem novidade, sem --ok-do-dono, diz que nao ha nada novo" grep -q 'nada novo para instalar' "$TMP/o4.txt"
+igual "dois backups agora" "2" "$(find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+
+echo "voltar"
+printf 'LINHA_NOVA_DEPOIS_DO_BACKUP=1\n' >>"$ETC/web.env"
+: >"$STUB_LOG"
+teraclaw atualizar --voltar "$B1" --simular >"$TMP/o5.txt" 2>&1; rc=$?
+igual "--voltar --simular sai com 0" "0" "$rc"
+afirma "a linha nova continua (simular nao restaurou nada)" grep -qx 'LINHA_NOVA_DEPOIS_DO_BACKUP=1' "$ETC/web.env"
+igual "o clone continua na branch de antes" "main" "$(git -C "$CLONE" rev-parse --abbrev-ref HEAD)"
+teraclaw atualizar --voltar "$B1" >"$TMP/o6.txt" 2>&1; rc=$?
+igual "--voltar sai com 0" "0" "$rc"
+[ "$rc" -eq 0 ] || sed 's/^/      | /' "$TMP/o6.txt" | tail -n 30
+afirma "o clone esta numa branch teraclaw-volta-*" bash -c "git -C '$CLONE' rev-parse --abbrev-ref HEAD | grep -q '^teraclaw-volta-'"
+igual "o clone voltou ao commit do backup" "$COMMIT_V1" "$(git -C "$CLONE" rev-parse HEAD)"
+afirma "a branch main continua no commit novo (nada apagado)" bash -c "[ \"\$(git -C '$CLONE' rev-parse main)\" = '$COMMIT_V2' ]"
+afirma "o web.env voltou ao do backup (sem a linha nova)" bash -c "! grep -qx 'LINHA_NOVA_DEPOIS_DO_BACKUP=1' '$ETC/web.env'"
+afirma "as linhas do aluno continuam" linhas_do_aluno_ok
+fotografar >"$TMP/depois.txt"
+igual "arquivos do aluno intactos depois de voltar" "" "$(diff "$TMP/antes.txt" "$TMP/depois.txt")"
+igual "o --voltar fez um backup do estado de antes (3 backups)" "3" "$(find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+afirma "um dos backups tem o motivo antes-de-voltar" grep -rqx 'motivo=antes-de-voltar' "$BACKUPS"
+afirma "reconstruiu a imagem ao voltar" grep -q '^podman build ' "$STUB_LOG"
+nega "backup inexistente e recusado" teraclaw atualizar --voltar "$TMP/nao-existe"
+
+echo "a conferencia pega um instalador que apaga uma chave e a atualizacao volta sozinha"
+git -C "$CLONE" switch -q main
+# shellcheck disable=SC2016 # o $@ e o $DG_ETC vao literais para dentro do install.sh sabotado
+sed -i 's|^main "\$@"$|main "$@"\n[ "${ENSAIO:-0}" = 1 ] \|\| sed -i "/^GROQ_API_KEY=/d" "$DG_ETC/web.env"|' "$TRAB/install.sh"
+git -C "$TRAB" add -A; git -C "$TRAB" commit -q -m v3-sabotado; git -C "$TRAB" push -q origin main
+echo 'sujeira do aluno' >"$CLONE/anotacao.txt"
+COMMIT_INSTALADO_ANTES="$(grep '^TERACLAW_COMMIT=' "$ETC/teraclaw.env")"
+WEB_ANTES="$(sha256sum <"$ETC/web.env")"
+NBACKUPS_ANTES="$(find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+: >"$STUB_LOG"
+# O dono precisa ver o relatorio da versao que vai ser instalada (a de agora e outra que a do relatorio anterior).
+teraclaw atualizar --forcar-local --simular >/dev/null 2>&1
+teraclaw atualizar --forcar-local --ok-do-dono >"$TMP/o7.txt" 2>&1; rc=$?
+igual "a atualizacao que apaga uma chave termina com erro (1)" "1" "$rc"
+afirma "aponta a chave que sumiu" grep -q "FALHOU.*'GROQ_API_KEY'" "$TMP/o7.txt"
+afirma "diz em portugues que a atualizacao foi desfeita sozinha" grep -q 'foi desfeita sozinha' "$TMP/o7.txt"
+afirma "diz o que deu errado, o que foi desfeito, o backup e o que fazer" bash -c "grep -q 'O que deu errado: a conferencia de configuracao' '$TMP/o7.txt' && grep -q 'O que foi desfeito' '$TMP/o7.txt' && grep -q 'O Tera Claw esta de volta na versao de antes. O backup que usei esta em $BACKUPS/' '$TMP/o7.txt' && grep -q 'O que fazer agora' '$TMP/o7.txt'"
+afirma "a chave voltou: web.env igual ao de antes" bash -c "[ \"\$(sha256sum <'$ETC/web.env')\" = '$WEB_ANTES' ]"
+afirma "as linhas do aluno continuam" linhas_do_aluno_ok
+igual "o teraclaw.env voltou a anotar o commit de antes" "$COMMIT_INSTALADO_ANTES" "$(grep '^TERACLAW_COMMIT=' "$ETC/teraclaw.env")"
+afirma "o clone esta numa branch teraclaw-volta-*" bash -c "git -C '$CLONE' rev-parse --abbrev-ref HEAD | grep -q '^teraclaw-volta-'"
+igual "dois backups novos: o da atualizacao e o do estado de antes de voltar" "$((NBACKUPS_ANTES + 2))" "$(find "$BACKUPS" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+ult="$(grep -n '^systemd-run' "$STUB_LOG" | tail -n 1 | cut -d: -f1)"; bld="$(grep -n '^podman build' "$STUB_LOG" | tail -n 1 | cut -d: -f1)"
+afirma "o Admin so e reiniciado no fim, de forma desacoplada (depois do build)" test "${ult:-0}" -gt "${bld:-1}"
+nega "o Admin nunca e reiniciado direto" grep -q '^systemctl restart teraclaw-admin' "$STUB_LOG"
+nega "o valor da chave nunca aparece na saida" grep -q 'gsk_chave_da_marta' "$TMP/o7.txt"
+afirma "--forcar-local guardou a sujeira do aluno no stash" bash -c "git -C '$CLONE' stash list | grep -q 'teraclaw-atualizar-'"
+nega "a anotacao saiu do clone para o stash, mas nao foi perdida" test -e "$CLONE/anotacao.txt"
+afirma "a anotacao esta no stash" bash -c "git -C '$CLONE' stash show -u -p stash@{0} | grep -q 'sujeira do aluno'"
+
+echo "--sem-voltar-sozinho: a conferencia reprova e o comando para, como antes"
+git -C "$CLONE" switch -q main
+: >"$STUB_LOG"
+teraclaw atualizar --sem-voltar-sozinho --simular >/dev/null 2>&1   # o dono ve o relatorio desta versao antes
+teraclaw atualizar --sem-voltar-sozinho --ok-do-dono >"$TMP/o7b.txt" 2>&1; rc=$?
+igual "termina com erro (1)" "1" "$rc"
+afirma "aponta a chave que sumiu" grep -q "FALHOU.*'GROQ_API_KEY'" "$TMP/o7b.txt"
+afirma "mostra como voltar" grep -q -- '--voltar' "$TMP/o7b.txt"
+nega "nao diz que desfez sozinho" grep -q 'foi desfeita sozinha' "$TMP/o7b.txt"
+nega "com problema, nao reinicia o Admin" grep -q '^systemd-run' "$STUB_LOG"
+nega "a chave continua apagada (nada foi desfeito)" grep -q '^GROQ_API_KEY=' "$ETC/web.env"
+nega "o valor da chave nunca aparece na saida" grep -q 'gsk_chave_da_marta' "$TMP/o7b.txt"
+
+echo "o instalador novo falha: volta sozinho e o web.env fica identico"
+# O instalador sabotado mexe no web.env e sai com erro (codigo 9) antes de instalar qualquer coisa.
+git -C "$TRAB" revert --no-edit HEAD >/dev/null 2>&1; git -C "$TRAB" push -q origin main
+git -C "$CLONE" switch -q main
+# O ultimo instalador que rodou foi o sabotado: instala o bom de novo, para que "a versao de antes" seja boa.
+teraclaw atualizar --simular >/dev/null 2>&1
+teraclaw atualizar --ok-do-dono >"$TMP/o7bom.txt" 2>&1 || sed 's/^/      | /' "$TMP/o7bom.txt" | tail -n 20
+printf 'GROQ_API_KEY=gsk_chave_da_marta\n' >>"$ETC/web.env"
+# shellcheck disable=SC2016
+sed -i 's|^main "\$@"$|[[ " $*" == *" --ensaio"* ]] \|\| { echo LIXO >"$DG_ETC/web.env"; exit 9; }\nmain "$@"|' "$TRAB/install.sh"
+git -C "$TRAB" add -A; git -C "$TRAB" commit -q -m v4-quebrado; git -C "$TRAB" push -q origin main
+WEB_ANTES="$(sort "$ETC/web.env" | sha256sum)"
+fotografar >"$TMP/antes-i.txt"
+: >"$STUB_LOG"
+teraclaw atualizar --simular >/dev/null 2>&1
+teraclaw atualizar --ok-do-dono >"$TMP/o7c.txt" 2>&1; rc=$?
+igual "termina com erro (1)" "1" "$rc"
+afirma "diz que o instalador novo terminou com erro" grep -q 'o instalador (install.sh) da versao nova terminou com erro' "$TMP/o7c.txt"
+afirma "diz que foi desfeita sozinha" grep -q 'foi desfeita sozinha' "$TMP/o7c.txt"
+# O instalador de antes pode reescrever as linhas em outra ordem; o que importa e que sejam as mesmas.
+afirma "o web.env ficou com exatamente as mesmas linhas de antes" bash -c "[ \"\$(sort '$ETC/web.env' | sha256sum)\" = '$WEB_ANTES' ]"
+nega "o web.env nao ficou com o lixo do instalador quebrado" grep -qx LIXO "$ETC/web.env"
+fotografar >"$TMP/depois-i.txt"
+igual "arquivos do aluno intactos" "" "$(diff "$TMP/antes-i.txt" "$TMP/depois-i.txt")"
+echo "o instalador novo falha, mas com --sem-voltar-sozinho o comando so para"
+git -C "$CLONE" switch -q main
+echo LIXO-ANTES >>"$ETC/web.env"
+WEB_ANTES="$(sha256sum <"$ETC/web.env")"
+teraclaw atualizar --sem-voltar-sozinho --simular >/dev/null 2>&1
+teraclaw atualizar --sem-voltar-sozinho --ok-do-dono >"$TMP/o7d.txt" 2>&1; rc=$?
+igual "termina com erro (1)" "1" "$rc"
+nega "nao desfez sozinho" grep -q 'foi desfeita sozinha' "$TMP/o7d.txt"
+afirma "diz como voltar a mao" grep -q 'sudo teraclaw atualizar --voltar' "$TMP/o7d.txt"
+nega "o web.env ficou como o instalador quebrado deixou (sem rollback)" bash -c "[ \"\$(sha256sum <'$ETC/web.env')\" = '$WEB_ANTES' ]"
+# Volta ao instalador bom e restaura o web.env para o que o resto do teste espera.
+git -C "$TRAB" revert --no-edit HEAD >/dev/null 2>&1; git -C "$TRAB" push -q origin main
+tar -xzOf "$B1/config.tar.gz" etc/teraclaw/web.env >"$ETC/web.env"
+git -C "$CLONE" switch -q main
+
+echo "um agente que nao recria: a atualizacao diz INCOMPLETA e nao reinicia o Admin"
+# O instalador bom ja voltou (revertido acima); a chave tambem.
+echo imagem-v4 >"$STUB_ESTADO/imagem-id"
+echo sempre >"$STUB_ESTADO/stop-trava-teraclaw-ana"   # o stop da Ana devolve e o container fica em 'stopping'
+touch "$STUB_ESTADO/mounts-volume"                     # com volume do podman o 'rm -f' e proibido: a Ana nao recria
+: >"$STUB_LOG"
+teraclaw atualizar --forcar-local --simular >/dev/null 2>&1
+TERACLAW_TEMPO_PARADA=2 teraclaw atualizar --forcar-local --ok-do-dono >"$TMP/o8.txt" 2>&1; rc=$?
+[ "$rc" -ne 0 ] || sed 's/^/      | /' "$TMP/o8.txt" | tail -n 30
+nega "sai com codigo diferente de 0" test "$rc" -eq 0
+afirma "diz INCOMPLETA" grep -q 'Atualizacao INCOMPLETA' "$TMP/o8.txt"
+nega "nao diz concluida" grep -q 'Atualizacao concluida' "$TMP/o8.txt"
+afirma "lista o agente com problema" grep -q 'Agentes COM PROBLEMA: ana' "$TMP/o8.txt"
+afirma "traz o comando para refazer o agente" grep -q 'teraclaw agente recriar ana --forcar' "$TMP/o8.txt"
+afirma "o Beto, que recriou, aparece como bem" grep -q 'Agentes que ficaram bem: beto' "$TMP/o8.txt"
+afirma "explica por que o Admin nao reinicia" grep -q 'NAO vou reiniciar o Admin' "$TMP/o8.txt"
+nega "nao agenda o reinicio do Admin" grep -q '^systemd-run' "$STUB_LOG"
+afirma "o resumo INCOMPLETA tambem foi gravado" grep -rq 'Atualizacao INCOMPLETA' "$RAIZ/var/log/teraclaw"
+afirma "o container do Beto foi trocado" grep -q '^podman create .*--name teraclaw-beto ' "$STUB_LOG"
+nega "agente que nao sobe NAO faz a atualizacao voltar sozinha" grep -q 'foi desfeita sozinha' "$TMP/o8.txt"
+afirma "explica que nao desfez e manda recriar o agente com --forcar" grep -q 'NAO desfiz a atualizacao.*teraclaw agente recriar <slug> --forcar' "$TMP/o8.txt"
+nega "o clone nao foi levado a uma branch teraclaw-volta por causa do agente" bash -c "git -C '$CLONE' rev-parse --abbrev-ref HEAD | grep -q '^teraclaw-volta-'"
+fotografar >"$TMP/depois.txt"
+igual "os arquivos do aluno continuam intactos" "" "$(diff "$TMP/antes.txt" "$TMP/depois.txt")"
+
+echo "refazer o agente travado com 'agente recriar --forcar'"
+rm -f "$STUB_ESTADO/mounts-volume"
+TERACLAW_TEMPO_PARADA=2 teraclaw agente recriar ana --forcar >"$TMP/o9.txt" 2>&1; rc=$?
+igual "recriar --forcar sai com 0" "0" "$rc"
+afirma "a Ana voltou a rodar" grep -qx running "$STUB_ESTADO/c-teraclaw-ana"
+rm -f "$STUB_ESTADO/stop-trava-teraclaw-ana"
+
+echo "o commit de antes vem do instalado, nao do HEAD do clone (clone mudado a mao)"
+COMMIT_ANTES="$(git -C "$CLONE" rev-parse HEAD)"
+git -C "$TRAB" commit -q --allow-empty -m v5; git -C "$TRAB" push -q origin main
+git -C "$CLONE" pull -q --ff-only                   # o aluno (ou o Admin) puxou a mao, antes do comando
+COMMIT_NOVO="$(git -C "$CLONE" rev-parse HEAD)"
+afirma "o clone ja esta no commit novo" test "$COMMIT_NOVO" != "$COMMIT_ANTES"
+sed -i '/^TERACLAW_COMMIT=/d; s/^TERACLAW_VERSAO=.*/TERACLAW_VERSAO=v1-'"${COMMIT_ANTES:0:12}"'/' "$ETC/teraclaw.env"
+: >"$STUB_LOG"
+teraclaw atualizar --sem-baixar --simular >/dev/null 2>&1
+teraclaw atualizar --sem-baixar --ok-do-dono >"$TMP/o10.txt" 2>&1; rc=$?
+igual "atualizar --sem-baixar sai com 0" "0" "$rc"
+[ "$rc" -eq 0 ] || sed 's/^/      | /' "$TMP/o10.txt" | tail -n 30
+afirma "algum manifesto grava o commit antigo certo" grep -rqx "commit=$COMMIT_ANTES" "$BACKUPS"
+nega "nenhum manifesto grava o commit novo como o antigo" grep -rqx "commit=$COMMIT_NOVO" "$BACKUPS"
+afirma "o resumo mostra o commit antigo certo" grep -q "(${COMMIT_ANTES:0:10}) ->" "$TMP/o10.txt"
+afirma "avisa que o clone ja estava em outro commit" grep -q 'o clone ja estava em' "$TMP/o10.txt"
+
+echo "sem TERACLAW_COMMIT nem hash na versao: usa o HEAD e avisa"
+sed -i '/^TERACLAW_COMMIT=/d; s/^TERACLAW_VERSAO=.*/TERACLAW_VERSAO=desconhecida/' "$ETC/teraclaw.env"
+# Sem saber o que esta instalado, o dono tem que dar o ok (nao ha como provar que nao muda nada).
+teraclaw atualizar --sem-baixar >"$TMP/o11a.txt" 2>&1; rc=$?
+nega "sem commit instalado e sem --ok-do-dono, para" test "$rc" -eq 0
+afirma "diz que nao sabe qual versao esta instalada" grep -q 'nao sei qual versao esta instalada' "$TMP/o11a.txt"
+teraclaw atualizar --sem-baixar --ok-do-dono >"$TMP/o11.txt" 2>&1; rc=$?
+igual "sai com 0" "0" "$rc"
+afirma "avisa que usou o HEAD do clone" grep -q 'uso o HEAD do clone' "$TMP/o11.txt"
+
+fim

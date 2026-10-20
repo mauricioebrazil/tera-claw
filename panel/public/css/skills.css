@@ -1,0 +1,26 @@
+/* skills.css: a aba Skills. Grade de cartões: 1 coluna no celular, 2 a 3 no computador. */
+#panel-skills { padding-bottom: 40px; }
+.sk-topo { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; margin-bottom: 14px; }
+.sk-contador { font-size: 15px; }
+.sk-contador b { font-size: 26px; font-weight: 600; letter-spacing: -.02em; margin-right: 4px; }
+.sk-onde { font-size: 12.5px; color: var(--fraco); min-width: 0; overflow-wrap: anywhere; }
+.sk-aviso { margin-bottom: 14px; overflow-wrap: anywhere; }
+.sk-grade { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 700px) { .sk-grade { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1100px) { .sk-grade { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.sk-cartao { background: var(--painel); border: 1px solid var(--linha); border-radius: var(--raio);
+  box-shadow: var(--sombra); min-width: 0; align-self: start; }
+.sk-cartao.aberto { border-color: var(--acento1); }
+.sk-cartao.sk-erro { border-color: var(--erro); }
+.sk-cab { all: unset; box-sizing: border-box; display: block; width: 100%; min-height: 44px;
+  padding: 14px 16px; cursor: pointer; }
+.sk-cab:focus-visible { outline: 2px solid var(--acento1); outline-offset: -2px; border-radius: var(--raio); }
+.sk-nome { display: block; font-size: 14.5px; font-weight: 600; overflow-wrap: anywhere; }
+.sk-desc { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  margin-top: 5px; font-size: 12.5px; line-height: 1.45; color: var(--fraco); }
+.sk-cartao.aberto .sk-desc { display: none; }
+.sk-detalhe { padding: 0 16px 14px; }
+.sk-desc-inteira { font-size: 13px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+.sk-pasta { margin-top: 10px; font-size: 12px; color: var(--fraco); overflow-wrap: anywhere; }
+.sk-msg-erro { margin-top: 8px; font-size: 12.5px; color: var(--erro); overflow-wrap: anywhere; }
+.sk-topo code, .sk-pasta code, .sk-aviso code { overflow-wrap: anywhere; }

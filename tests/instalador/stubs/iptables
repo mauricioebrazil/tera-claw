@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Guarda cadeias e regras em arquivos para os testes do firewall.sh. A tabela mangle
+# vira o prefixo "mangle/" na chave da cadeia; a filter (padrao) fica sem prefixo.
+# Um teste pode pre-popular $TERACLAW_STUB_ESTADO/ipt-regras (linhas "|cadeia| args", na
+# ordem) para simular o netavark ocupando o topo do FORWARD.
+. "$(dirname "$0")/_comum.sh"
+registrar "$@"
+e="$(estado_dir)"
+tabela=""
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -w) ;;
+        -t) tabela="$2"; shift ;;
+        *) args+=("$1") ;;
+    esac
+    shift
+done
+set -- "${args[@]}"
+cmd="$1"; cadeia="$2"
+chave="$cadeia"
+[ -n "$tabela" ] && [ "$tabela" != filter ] && chave="$tabela/$cadeia"
+touch "$e/ipt-regras" "$e/ipt-cadeias"
+case "$cmd" in
+    -L) grep -qxF "$chave" "$e/ipt-cadeias" ;;
+    -N) if grep -qxF "$chave" "$e/ipt-cadeias"; then exit 1; fi; echo "$chave" >>"$e/ipt-cadeias" ;;
+    -F) grep -vF "|$chave|" "$e/ipt-regras" >"$e/ipt-regras.novo" || true; mv -f "$e/ipt-regras.novo" "$e/ipt-regras" ;;
+    -A) shift 2; echo "|$chave| $*" >>"$e/ipt-regras" ;;
+    -I)
+        n="$3"; shift 3
+        awk -v k="|$chave|" -v n="$n" -v nova="|$chave| $*" '
+            BEGIN { c = 0; feito = 0 }
+            index($0, k) == 1 { c++; if (c == n && !feito) { print nova; feito = 1 } }
+            { print }
+            END { if (!feito) print nova }' "$e/ipt-regras" >"$e/ipt-regras.novo"
+        mv -f "$e/ipt-regras.novo" "$e/ipt-regras" ;;
+    -D)
+        awk -v k="|$chave|" -v n="$3" '
+            index($0, k) == 1 { c++; if (c == n) next }
+            { print }' "$e/ipt-regras" >"$e/ipt-regras.novo"
+        mv -f "$e/ipt-regras.novo" "$e/ipt-regras" ;;
+    -S) grep -F "|$chave| " "$e/ipt-regras" | sed -E "s/^\|[^|]*\| /-A $cadeia /" || true ;;
+    -C) shift 2; grep -qxF "|$chave| $*" "$e/ipt-regras" ;;
+esac

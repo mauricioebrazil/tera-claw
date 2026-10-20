@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>Primeiro acesso - Tera Claw</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#2f9e5e">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/login.css">
+<link rel="stylesheet" href="/sem-zoom.css">
+<script src="/sem-zoom.js"></script>
+</head>
+<body>
+<main class="cartao">
+  <div class="marca"><span class="emoji" aria-hidden="true">🦞</span><h1>Primeiro acesso</h1></div>
+  <p class="sub">Cadastre sua senha</p>
+  <div id="erro" class="erro" role="alert" hidden></div>
+  <form id="form" autocomplete="off">
+    <p class="sub" id="quem">Usuário: o que você escolheu na instalação</p>
+    <label for="senha">Senha</label>
+    <input id="senha" name="senha" type="password" autocomplete="new-password" minlength="12" required autofocus>
+    <label for="confirmacao">Repita a senha</label>
+    <input id="confirmacao" name="confirmacao" type="password" autocomplete="new-password" minlength="12" required>
+    <button type="submit" id="salvar">Salvar e entrar</button>
+  </form>
+</main>
+<script src="/primeiro-acesso.js"></script>
+</body>
+</html>

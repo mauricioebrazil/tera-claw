@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# teraclaw-api: o agente chama a API do Tera Claw Web pela "caixa". Roda DENTRO do container.
+# O container nao alcanca o host, entao o pedido vai como arquivo para ~/.teraclaw/caixa/entrada; o Web
+# (que enxerga a casa do agente) executa a rota e devolve a resposta em ~/.teraclaw/caixa/saida.
+# Contrato completo: docs/CAIXA-DO-AGENTE.md (no Web: GET /api/v1/caixa/docs.md).
+#
+# Uso:
+#   teraclaw-api <METODO> <ROTA> [CORPO_JSON | --arquivo F | -] [--com-status] [--espera S]
+#   teraclaw-api ajuda
+#
+#   METODO         GET, POST, PUT, PATCH ou DELETE
+#   ROTA           comeca com /api/v1/ (query string vale: "/api/v1/lembretes?limit=5")
+#   CORPO          JSON como argumento, --arquivo caminho.json, ou - para ler do stdin
+#   --com-status   imprime {"status":201,"corpo":{...}} em vez de so o corpo
+#   --espera S     segundos de espera pela resposta (padrao 20, de 1 a 120)
+#
+# Saida: o corpo da resposta (JSON compacto; texto, como os docs.md, sai cru). Em erro HTTP o corpo sai
+# no stdout do mesmo jeito e a frase do campo "erro" sai no stderr.
+#
+# Variaveis de ambiente:
+#   TERACLAW_CAIXA_DIR   so para testes: pasta da caixa no lugar de $HOME/.teraclaw/caixa
+#
+# Codigos de saida:
+#   0  resposta 2xx
+#   1  erro de uso (metodo, rota fora de /api/v1/, JSON invalido, arquivo ilegivel, pedido grande demais)
+#   2  o Web nao respondeu dentro da espera (fora do ar ou reiniciando); o pedido e retirado da entrada
+#   3  a caixa nao esta disponivel (pasta ausente ou sem permissao): peca ao dono para rodar
+#      "sudo teraclaw agente reparar <slug>"
+#   4  resposta 4xx (pedido errado: leia o "erro")
+#   5  resposta 5xx (problema do lado do Web: leia o "erro") ou resposta que nao deu para entender
+set -euo pipefail
+umask 077
+
+erro() { echo "teraclaw-api: $*" >&2; }
+die() { local c="${CODIGO:-1}"; erro "$*"; exit "$c"; }
+
+cmd_ajuda() {
+  sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-ajuda}" in ajuda|-h|--help) cmd_ajuda; exit 0 ;; esac
+
+command -v jq >/dev/null || die "o jq nao foi encontrado no container. Avise quem mantem a imagem do agente."
+
+METODO="${1^^}"; shift
+case "$METODO" in GET|POST|PUT|PATCH|DELETE) ;; *) die "metodo invalido: '$METODO'. Use GET, POST, PUT, PATCH ou DELETE (veja 'teraclaw-api ajuda')." ;; esac
+[ $# -gt 0 ] || die "falta a rota. Exemplo: teraclaw-api $METODO /api/v1/lembretes"
+ROTA="$1"; shift
+[[ "$ROTA" == /api/v1/* ]] || die "a rota precisa comecar com /api/v1/ (recebido: '$ROTA')."
+[ "${#ROTA}" -le 2000 ] || die "a rota passa de 2000 caracteres. Use um corpo JSON para mandar dados grandes."
+case "$ROTA" in *..*|*[[:space:]\\]*) die "a rota '$ROTA' tem '..', espaco ou barra invertida, que a caixa recusa. Codifique o espaco como %20." ;; esac
+
+CORPO=""; ARQUIVO=""; STDIN=0; COM_STATUS=0; ESPERA=20; TEM_CORPO=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --arquivo) [ $# -ge 2 ] || die "falta o valor de --arquivo."; ARQUIVO="$2"; TEM_CORPO=$((TEM_CORPO + 1)); shift 2 ;;
+    --com-status) COM_STATUS=1; shift ;;
+    --espera) [ $# -ge 2 ] || die "falta o valor de --espera."; ESPERA="$2"; shift 2 ;;
+    -) STDIN=1; TEM_CORPO=$((TEM_CORPO + 1)); shift ;;
+    -*) die "opcao desconhecida: '$1'. Veja 'teraclaw-api ajuda'." ;;
+    *) CORPO="$1"; TEM_CORPO=$((TEM_CORPO + 1)); shift ;;
+  esac
+done
+[ "$TEM_CORPO" -le 1 ] || die "mais de um corpo informado. Use so um: JSON no argumento, --arquivo ou - (stdin)."
+[[ "$ESPERA" =~ ^[0-9]+$ ]] && [ "$ESPERA" -ge 1 ] && [ "$ESPERA" -le 120 ] \
+  || die "--espera precisa ser um numero de segundos de 1 a 120 (recebido: '$ESPERA')."
+
+# --- caixa --------------------------------------------------------------------
+if [ -n "${TERACLAW_CAIXA_DIR:-}" ]; then BASE="$TERACLAW_CAIXA_DIR"
+elif [ -n "${HOME:-}" ]; then BASE="$HOME/.teraclaw/caixa"
+else CODIGO=3 die "a variavel HOME nao esta definida, entao nao sei onde fica a caixa. Peca ao dono para reiniciar o agente pelo painel."
+fi
+ENTRADA="$BASE/entrada"; SAIDA="$BASE/saida"
+mkdir -p "$ENTRADA" "$SAIDA" 2>/dev/null \
+  || CODIGO=3 die "nao consegui preparar a caixa em $BASE (pasta ausente ou sem permissao). Peca ao dono para rodar 'sudo teraclaw agente reparar <slug>'."
+# so endurece a permissao: se o chmod falhar, a caixa ainda funciona e o pedido segue
+chmod 700 "$ENTRADA" "$SAIDA" 2>/dev/null || true
+
+# --- monta o pedido -------------------------------------------------------------
+ID="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+TMP="$ENTRADA/.$ID.tmp"
+PEDIDO="$ENTRADA/$ID.json"
+RESPOSTA="$SAIDA/$ID.json"
+trap 'rm -f "$TMP"' EXIT
+
+# O filtro joga o corpo (qualquer JSON, inclusive grande) para dentro do pedido sem passar por argv.
+# shellcheck disable=SC2016 # $id, $m e $r sao variaveis do jq, nao do bash
+FILTRO='if length == 1 then {v: 1, id: $id, metodo: $m, rota: $r, corpo: .[0]} else error("o corpo precisa ser exatamente um valor JSON") end'
+SEM_CAIXA="nao consegui gravar o pedido em $ENTRADA. Peca ao dono para rodar 'sudo teraclaw agente reparar <slug>'."
+: > "$TMP" 2>/dev/null || CODIGO=3 die "$SEM_CAIXA"
+if [ "$TEM_CORPO" -eq 0 ]; then
+  jq -nc --arg id "$ID" --arg m "$METODO" --arg r "$ROTA" '{v: 1, id: $id, metodo: $m, rota: $r}' > "$TMP"
+else
+  if [ "$STDIN" -eq 1 ]; then ORIGEM="do stdin"; elif [ -n "$ARQUIVO" ]; then ORIGEM="do arquivo '$ARQUIVO'"; else ORIGEM="do argumento"; fi
+  if [ -n "$ARQUIVO" ]; then
+    [ -f "$ARQUIVO" ] && [ -r "$ARQUIVO" ] || die "nao consegui ler o arquivo '$ARQUIVO'. Confira o caminho e a permissao."
+  fi
+  ERRO_JQ="$(mktemp)"
+  trap 'rm -f "$TMP" "$ERRO_JQ"' EXIT
+  RC=0
+  if [ -n "$ARQUIVO" ]; then
+    jq -sc --arg id "$ID" --arg m "$METODO" --arg r "$ROTA" "$FILTRO" < "$ARQUIVO" > "$TMP" 2>"$ERRO_JQ" || RC=$?
+  elif [ "$STDIN" -eq 1 ]; then
+    jq -sc --arg id "$ID" --arg m "$METODO" --arg r "$ROTA" "$FILTRO" > "$TMP" 2>"$ERRO_JQ" || RC=$?
+  else
+    printf '%s' "$CORPO" | jq -sc --arg id "$ID" --arg m "$METODO" --arg r "$ROTA" "$FILTRO" > "$TMP" 2>"$ERRO_JQ" || RC=$?
+  fi
+  [ "$RC" -eq 0 ] || die "o corpo vindo $ORIGEM nao e um JSON valido ($(head -c 200 "$ERRO_JQ" | tr '\n' ' ')). Confira as aspas e as virgulas."
+fi
+
+TAMANHO="$(wc -c < "$TMP")"
+[ "$TAMANHO" -le 1048576 ] || die "o pedido tem $TAMANHO bytes e a caixa aceita no maximo 1048576 (1 MB). Mande menos dados."
+mv -f "$TMP" "$PEDIDO" 2>/dev/null || CODIGO=3 die "$SEM_CAIXA"
+
+# --- espera a resposta ------------------------------------------------------------
+PASSOS=$((ESPERA * 5))
+for ((i = 0; i < PASSOS; i++)); do
+  [ -f "$RESPOSTA" ] && break
+  sleep 0.2
+done
+if [ ! -f "$RESPOSTA" ]; then
+  rm -f "$PEDIDO"
+  rm -f "$RESPOSTA"
+  CODIGO=2 die "o Web nao respondeu em $ESPERA s ($METODO $ROTA). Ele pode estar reiniciando: espere cerca de um minuto e tente de novo; se continuar, avise o dono. O pedido foi retirado da caixa."
+fi
+
+# --- le, apaga e imprime ------------------------------------------------------------
+TEXTO="$(cat -- "$RESPOSTA")" || CODIGO=3 die "nao consegui ler a resposta em $RESPOSTA. Peca ao dono para rodar 'sudo teraclaw agente reparar <slug>'."
+rm -f "$RESPOSTA"
+# jq falhar aqui quer dizer resposta fora do formato: STATUS fica vazio e a linha seguinte explica o erro
+STATUS="$(printf '%s' "$TEXTO" | jq -r 'if (.status | type) == "number" then .status else empty end' 2>/dev/null || true)"
+[ -n "$STATUS" ] || CODIGO=5 die "a resposta do Web nao tem o formato esperado (veio: $(printf '%s' "$TEXTO" | head -c 200 | tr '\n' ' ')). Avise o dono: o Web e o teraclaw-api podem estar em versoes diferentes."
+
+if [ "$COM_STATUS" -eq 1 ]; then
+  printf '%s' "$TEXTO" | jq -c '{status, corpo}'
+else
+  printf '%s' "$TEXTO" | jq -r 'if (.corpo | type) == "string" then .corpo else (.corpo | tojson) end'
+fi
+
+case "$STATUS" in
+  2??) exit 0 ;;
+  4??|5??)
+    # motivo e prazo sao detalhes opcionais: sem eles, a mensagem de erro usa o texto padrao abaixo
+    MOTIVO="$(printf '%s' "$TEXTO" | jq -r 'if (.corpo | type) == "object" and ((.corpo.erro | type) == "string") then .corpo.erro else empty end' 2>/dev/null || true)"
+    ESPERAR="$(printf '%s' "$TEXTO" | jq -r 'if (.corpo | type) == "object" and ((.corpo.retryAfter | type) == "number") then " Tente de novo em \(.corpo.retryAfter) s." else empty end' 2>/dev/null || true)"
+    if [ "${STATUS:0:1}" = 4 ]; then CODIGO=4; else CODIGO=5; fi
+    die "${MOTIVO:-o Web respondeu HTTP $STATUS sem explicar o motivo}${ESPERAR}" ;;
+  *) CODIGO=5 die "o Web respondeu HTTP $STATUS, que o teraclaw-api nao sabe tratar." ;;
+esac

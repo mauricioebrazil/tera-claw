@@ -1,0 +1,23 @@
+{
+  "name": "@teraclaw/runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "O dono do processo do CLI (Claude Code ou Codex) de UM agente do Tera Claw. Fala o mesmo protocolo HTTP/WS do DG AI Bunker.",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test \"dist/**/*.test.js\"",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^7.0.2"
+  }
+}

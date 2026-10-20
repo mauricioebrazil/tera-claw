@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+echo "caddy $*" >> "${STUB_LOG:?}"
+[ -f "${STUB_ESTADO:?}/caddy-falha" ] && { echo "Error: configuracao invalida" >&2; exit 1; }
+exit 0

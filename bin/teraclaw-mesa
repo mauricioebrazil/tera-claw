@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2016
+# teraclaw-mesa: o agente cria, atualiza e conclui as tarefas da Mesa do Tera Claw Web.
+# Roda DENTRO do container, como "agente". E um involucro fino do teraclaw-api (a caixa do agente):
+# nao ha endereco nem chave aqui, o Web reconhece o agente pela caixa.
+#
+# Uso:
+#   teraclaw-mesa criar --titulo T --origem "Dono, 05/10 15h42: o pedido" [--tipo conteudo|desenvolvimento|projeto|outro]
+#                     [--passo P]... [--nota N] [--link URL] [--progresso 0-100]
+#   teraclaw-mesa atualizar <id> [--progresso N] [--nota N] [--link URL] [--titulo T] [--passo P]...
+#                     (--passo TROCA a lista inteira de passos)
+#   teraclaw-mesa passo <id> <numero|texto> [--desfazer]     marca (ou desmarca) um passo
+#   teraclaw-mesa pedir <id> --motivo M                      estado esperando_dono (avisa o dono)
+#   teraclaw-mesa travar <id> --motivo M                     estado travada
+#   teraclaw-mesa retomar <id> [--nota N]                    volta a fazendo
+#   teraclaw-mesa concluir <id> [--link URL] [--nota N]
+#   teraclaw-mesa cancelar <id> [--motivo M]                 cancela (nao apaga)
+#   teraclaw-mesa vivo <id>                                  sinal de vida
+#   teraclaw-mesa ver <id>                                   a tarefa com o historico
+#   teraclaw-mesa listar [--todos] [--dia hoje|todos|AAAA-MM-DD] [--retrato]
+#   teraclaw-mesa ajuda
+#
+# Todo subcomando aceita --json: imprime a resposta crua da API em vez da frase.
+# "listar" mostra as suas tarefas abertas e as fechadas hoje; --todos mostra a mesa inteira;
+# --retrato le a ultima copia que o Web deixou em ~/.teraclaw/retratos/mesa.json, sem chamar o Web.
+#
+# Variaveis de ambiente:
+#   TERACLAW_SLUG        o slug deste agente (o instalador define); filtra o "listar"
+#   TERACLAW_API_BIN     so para testes: caminho do teraclaw-api (padrao: teraclaw-api no PATH, senao
+#                      /opt/teraclaw/app/bin/teraclaw-api)
+#   TERACLAW_RETRATO     so para testes: arquivo do retrato (padrao ~/.teraclaw/retratos/mesa.json)
+#
+# Codigos de saida:
+#   0  ok
+#   1  erro de uso (argumento faltando, id que nao e numero, opcao desconhecida)
+#   2  o Web nao respondeu (fora do ar ou reiniciando): tente de novo em instantes
+#   3  a caixa do agente nao esta disponivel: peca ao dono 'sudo teraclaw agente reparar <slug>'
+#   4  o Web recusou o pedido (4xx): a frase do erro sai no stderr
+#   5  erro do lado do Web (5xx): a frase do erro sai no stderr
+set -euo pipefail
+umask 077
+
+erro() { echo "teraclaw-mesa: $*" >&2; }
+die() { local c="${CODIGO:-1}"; erro "$*"; exit "$c"; }
+
+command -v jq >/dev/null || die "o jq não foi encontrado no container. Avise quem mantém a imagem do agente."
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+SLUG="${TERACLAW_SLUG:-}"
+SUB=""
+JSON=0
+declare -A O=()
+PASSOS=()
+POS=()
+
+# --- opcoes ---------------------------------------------------------------
+# parse "opcoes aceitas" args...  -> O[nome]=valor, PASSOS, POS, JSON
+parse() {
+  local aceitas=" $1 " nome; shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) JSON=1; shift ;;
+      --desfazer|--todos|--retrato)
+        nome="${1#--}"
+        [[ "$aceitas" == *" $nome "* ]] || die "opção desconhecida em '$SUB': '$1'. Veja 'teraclaw-mesa ajuda'."
+        O[$nome]=1; shift ;;
+      --passo)
+        [[ "$aceitas" == *" passo "* ]] || die "opção desconhecida em '$SUB': '$1'. Veja 'teraclaw-mesa ajuda'."
+        [ $# -ge 2 ] || die "falta o valor de --passo."
+        PASSOS+=("$2"); shift 2 ;;
+      --*)
+        nome="${1#--}"
+        [[ "$aceitas" == *" $nome "* ]] || die "opção desconhecida em '$SUB': '$1'. Veja 'teraclaw-mesa ajuda'."
+        [ $# -ge 2 ] || die "falta o valor de $1."
+        O[$nome]="$2"; shift 2 ;;
+      *) POS+=("$1"); shift ;;
+    esac
+  done
+}
+
+tem() { [ -n "${O[$1]+x}" ]; }
+
+# Texto obrigatorio e nao vazio.
+exigir() { # $1 = opcao, $2 = exemplo
+  tem "$1" && [ -n "${O[$1]//[[:space:]]/}" ] || die "falta --$1 em '$SUB'. Exemplo: teraclaw-mesa $SUB $2"
+}
+
+ID=""
+pegar_id() { # exige exatamente o id como primeiro posicional
+  [ "${#POS[@]}" -ge 1 ] || die "falta o id da tarefa em '$SUB'. Veja os ids com 'teraclaw-mesa listar'."
+  ID="${POS[0]}"
+  [[ "$ID" =~ ^[0-9]+$ ]] || die "id de tarefa inválido: '$ID'. O id é o número depois do # (veja com 'teraclaw-mesa listar')."
+}
+
+so_o_id() {
+  [ "${#POS[@]}" -le 1 ] || die "argumento a mais em '$SUB': '${POS[1]}'. Textos com espaço vão entre aspas."
+}
+
+validar_progresso() {
+  [[ "${O[progresso]}" =~ ^[0-9]+$ ]] && [ "${O[progresso]}" -le 100 ] \
+    || die "--progresso precisa ser um número de 0 a 100 (recebido: '${O[progresso]}')."
+}
+
+# --- corpo (sempre montado pelo jq) -----------------------------------------
+CORPO='{}'
+c_str() { CORPO="$(jq -c --arg v "$2" ".$1 = \$v" <<<"$CORPO")"; }
+c_num() { CORPO="$(jq -c --argjson v "$2" ".$1 = \$v" <<<"$CORPO")"; }
+c_passos() { CORPO="$(jq -c --argjson v "$(jq -nc '$ARGS.positional' --args -- "$@")" '.passos = $v' <<<"$CORPO")"; }
+
+# --- chamada a caixa -------------------------------------------------------
+API_BIN=""
+achar_api() {
+  if [ -n "${TERACLAW_API_BIN:-}" ]; then API_BIN="$TERACLAW_API_BIN"
+  elif command -v teraclaw-api >/dev/null 2>&1; then API_BIN="$(command -v teraclaw-api)"
+  else API_BIN="/opt/teraclaw/app/bin/teraclaw-api"; fi
+  [ -x "$API_BIN" ] || CODIGO=3 die "a caixa do agente (o comando teraclaw-api) não está instalada nesta imagem (procurei '$API_BIN'). Peça ao dono para atualizar o Tera Claw e rodar 'sudo teraclaw agente reparar ${SLUG:-<slug>}'."
+}
+
+RESP=""
+STATUS=0
+ERRO_API=""
+# chamar METODO ROTA [CORPO]  ->  RESP (corpo), STATUS (codigo do teraclaw-api). Sai com a mensagem certa se falhar.
+chamar() {
+  local metodo="$1" rota="$2" corpo="${3:-}"
+  achar_api
+  STATUS=0
+  if [ -n "$corpo" ]; then
+    RESP="$(printf '%s' "$corpo" | "$API_BIN" "$metodo" "$rota" - 2>"$TMP/err")" || STATUS=$?
+  else
+    RESP="$("$API_BIN" "$metodo" "$rota" 2>"$TMP/err")" || STATUS=$?
+  fi
+  ERRO_API="$(head -c 400 "$TMP/err" | tr '\n' ' ')"
+  [ "$STATUS" = 0 ] || falha "$metodo" "$rota"
+}
+
+falha() {
+  local metodo="$1" rota="$2" frase campos
+  # detalhe opcional: se a resposta nao for JSON, usa o texto de erro da propria caixa
+  frase="$(jq -r '.erro // empty' <<<"$RESP" 2>/dev/null || true)"
+  [ -n "$frase" ] || frase="$ERRO_API"
+  case "$STATUS" in
+    1) CODIGO=1 die "a caixa recusou o pedido como erro de uso ($metodo $rota): ${frase:-sem detalhe}. Isto parece defeito do teraclaw-mesa; avise o dono." ;;
+    2) CODIGO=2 die "o Web não respondeu ($metodo $rota). Ele pode estar fora do ar ou reiniciando: espere cerca de um minuto e tente de novo. Para só ler, 'teraclaw-mesa listar --retrato' mostra a última cópia." ;;
+    3) CODIGO=3 die "a caixa do agente não está disponível${frase:+ ($frase)}. Peça ao dono para rodar 'sudo teraclaw agente reparar ${SLUG:-<slug>}' e tente de novo." ;;
+    4)
+      # lista de campos e opcional: sem ela, a mensagem principal do erro ja sai logo abaixo
+      campos="$(jq -r '(.erros // {}) | if type == "object" then to_entries[] | "  \(.key): \(.value)" else empty end' <<<"$RESP" 2>/dev/null || true)"
+      erro "o Web recusou o pedido ($metodo $rota): ${frase:-sem explicação}"
+      [ -z "$campos" ] || printf '%s\n' "$campos" >&2
+      erro "corrija o que foi apontado e tente de novo."
+      exit 4 ;;
+    5) CODIGO=5 die "erro do lado do Web ($metodo $rota): ${frase:-sem explicação}. Tente de novo em instantes; se continuar, avise o dono." ;;
+    *) CODIGO="$STATUS" die "a caixa devolveu o código $STATUS ($metodo $rota): ${frase:-sem detalhe}." ;;
+  esac
+}
+
+# Resposta que nao e JSON valido: nunca finge sucesso.
+exigir_json() {
+  jq -e . >/dev/null 2>&1 <<<"$RESP" || CODIGO=5 die "o Web respondeu algo que não é JSON (${RESP:0:120}). Tente de novo; se continuar, avise o dono."
+}
+
+# Imprime a frase (via filtro jq sobre a resposta) ou a resposta crua com --json.
+saida() { # $1 = filtro jq, resto = argumentos extras do jq
+  if [ "$JSON" = 1 ]; then printf '%s\n' "$RESP"; return 0; fi
+  exigir_json
+  jq -r "${@:2}" "$DEFS $1" <<<"$RESP"
+}
+
+DEFS='
+def prog: if .progresso == null then "sem medida" else "\(.progresso)%" end;
+def est: .estado + (if .parada then " (parada?)" else "" end);
+def t: "tarefa #\(.id)";
+'
+
+# --- subcomandos ----------------------------------------------------------
+cmd_criar() {
+  parse "titulo origem tipo passo nota link progresso" "$@"
+  [ "${#POS[@]}" = 0 ] || die "argumento a mais em 'criar': '${POS[0]}'. Textos com espaço vão entre aspas."
+  exigir titulo '--titulo "Roteiro do reels" --origem "Dono, 05/10 15h42: faz o roteiro"'
+  exigir origem '--titulo "Roteiro do reels" --origem "Dono, 05/10 15h42: faz o roteiro"'
+  c_str titulo "${O[titulo]}"; c_str origem "${O[origem]}"
+  ! tem tipo || c_str tipo "${O[tipo]}"
+  ! tem nota || c_str nota "${O[nota]}"
+  ! tem link || c_str link "${O[link]}"
+  if tem progresso; then validar_progresso; c_num progresso "${O[progresso]}"; fi
+  [ "${#PASSOS[@]}" = 0 ] || c_passos "${PASSOS[@]}"
+  chamar POST /api/v1/tarefas "$CORPO"
+  saida '.tarefa | "\(t) criada (\(.estado)) \"\(.titulo)\""'
+}
+
+cmd_atualizar() {
+  parse "progresso nota link titulo passo" "$@"
+  pegar_id; so_o_id
+  ! tem progresso || { validar_progresso; c_num progresso "${O[progresso]}"; }
+  ! tem nota || c_str nota "${O[nota]}"
+  ! tem link || c_str link "${O[link]}"
+  ! tem titulo || c_str titulo "${O[titulo]}"
+  [ "${#PASSOS[@]}" = 0 ] || c_passos "${PASSOS[@]}"
+  [ "$CORPO" != '{}' ] || die "nada para atualizar. Use --progresso, --nota, --link, --titulo ou --passo (ou 'teraclaw-mesa vivo $ID' para só dar sinal de vida)."
+  chamar PATCH "/api/v1/tarefas/$ID" "$CORPO"
+  saida '.tarefa | "\(t) atualizada (\(est), \(prog))"'
+}
+
+cmd_passo() {
+  parse "desfazer" "$@"
+  [ "${#POS[@]}" = 2 ] || die "uso: teraclaw-mesa passo <id> <número|texto> [--desfazer]. Exemplo: teraclaw-mesa passo 12 1"
+  pegar_id
+  local alvo="${POS[1]}" campo="passo_feito"
+  tem desfazer && campo="passo_desfeito"
+  if [[ "$alvo" =~ ^[0-9]+$ ]]; then c_num "$campo" "$alvo"; else c_str "$campo" "$alvo"; fi
+  chamar PATCH "/api/v1/tarefas/$ID" "$CORPO"
+  local verbo="feito"; tem desfazer && verbo="desmarcado"
+  saida '.tarefa | "\(t): passo \($alvo) '"$verbo"' (\(prog))"' --arg alvo "$alvo"
+}
+
+enviar_estado() { # $1 = estado
+  c_str estado "$1"
+  ! tem motivo || c_str motivo "${O[motivo]}"
+  ! tem nota || c_str nota "${O[nota]}"
+  chamar PATCH "/api/v1/tarefas/$ID" "$CORPO"
+}
+
+cmd_pedir() {
+  parse "motivo" "$@"; pegar_id; so_o_id
+  exigir motivo '12 --motivo "gancho A ou B? mandei os dois na conversa"'
+  enviar_estado esperando_dono
+  saida '.tarefa | "\(t): esperando você: \(.motivo)"'
+}
+
+cmd_travar() {
+  parse "motivo" "$@"; pegar_id; so_o_id
+  exigir motivo '12 --motivo "a API do Instagram caiu"'
+  enviar_estado travada
+  saida '.tarefa | "\(t): travada: \(.motivo)"'
+}
+
+cmd_retomar() {
+  parse "nota" "$@"; pegar_id; so_o_id
+  enviar_estado fazendo
+  saida '.tarefa | "\(t): de volta a fazendo (\(prog))"'
+}
+
+cmd_concluir() {
+  parse "link nota" "$@"; pegar_id; so_o_id
+  ! tem link || c_str link "${O[link]}"
+  enviar_estado concluida
+  saida '.tarefa | "\(t) concluída \"\(.titulo)\"" + (if .link then " (\(.link))" else "" end)'
+}
+
+cmd_cancelar() {
+  parse "motivo" "$@"; pegar_id; so_o_id
+  ! tem motivo || c_str motivo "${O[motivo]}"
+  chamar DELETE "/api/v1/tarefas/$ID" "$CORPO"
+  saida 'if .ja_estava then "\(.tarefa | t) já estava cancelada" else "\(.tarefa | t) cancelada" end'
+}
+
+cmd_vivo() {
+  parse "" "$@"; pegar_id; so_o_id
+  chamar PATCH "/api/v1/tarefas/$ID" '{}'
+  saida '.tarefa | "\(t): sinal de vida registrado (\(est))"'
+}
+
+cmd_ver() {
+  parse "" "$@"; pegar_id; so_o_id
+  chamar GET "/api/v1/tarefas/$ID"
+  saida '.tarefa as $x | $x | (
+      "\(t) [\(.agente)] \(.titulo)",
+      "estado: \(est)   progresso: \(prog)" + (if .tipo then "   tipo: \(.tipo)" else "" end),
+      (if .origem then "origem: \(.origem)" else empty end),
+      (if .motivo then "motivo: \(.motivo)" else empty end),
+      (if .nota then "nota: \(.nota)" else empty end),
+      (if .link then "link: \(.link)" else empty end),
+      (if (.passos // []) | length > 0 then "passos:", (.passos | to_entries[] | "  \(.key + 1). [\(if .value.feito then "x" else " " end)] \(.value.texto)") else empty end),
+      (if (.anexos // []) | length > 0 then "anexos:", (.anexos[] | "  - \(.rotulo): \(.url)") else empty end),
+      (if .atualizada_ha_min != null then "atualizada há \(.atualizada_ha_min) min" else empty end)
+    ),
+    (if ($x.eventos // []) | length > 0 then "histórico:", ($x.eventos[] | "  \(.em // .quando // .criado_em // .em_iso // "") \(.por // "?"): \(.acao // .tipo // .resumo // "")") else empty end)'
+}
+
+FILTRO_LISTA='(.tarefas // []) as $l | if ($l | length) == 0 then "nenhuma tarefa." else $l[] | (if $ARGS.named.todos == "1" then "[\(.agente)] " else "" end) + "#\(.id) \(est) \(prog) \"\(.titulo)\"" + (if .motivo then " | motivo: \(.motivo)" else "" end) end'
+
+cmd_listar() {
+  parse "todos dia retrato" "$@"
+  [ "${#POS[@]}" = 0 ] || die "argumento a mais em 'listar': '${POS[0]}'."
+  local todos=0; tem todos && todos=1
+  if tem retrato; then
+    if [ "$todos" = 1 ] || tem dia; then die "--retrato só traz as suas tarefas (abertas e de hoje); não combina com --todos nem com --dia."; fi
+    local arq="${TERACLAW_RETRATO:-$HOME/.teraclaw/retratos/mesa.json}" quando
+    [ -r "$arq" ] || die "não há retrato da mesa em '$arq': o Web ainda não deixou nenhuma cópia. Tente 'teraclaw-mesa listar' (sem --retrato)."
+    jq -e . "$arq" >/dev/null 2>&1 || die "o retrato '$arq' não é um JSON válido. Tente 'teraclaw-mesa listar' (sem --retrato)."
+    quando="$(jq -r '.atualizado_em // "data desconhecida"' "$arq")"
+    if [ "$JSON" = 1 ]; then
+      erro "aviso: esta é a última cópia que o Web deixou (atualizado_em: $quando); pode estar desatualizada."
+      cat "$arq"
+    else
+      echo "aviso: esta é a última cópia que o Web deixou (atualizado_em: $quando); pode estar desatualizada."
+      jq -r --arg todos 0 "$DEFS $FILTRO_LISTA" "$arq"
+    fi
+    return 0
+  fi
+  local rota="/api/v1/tarefas" q=()
+  if [ "$todos" = 0 ]; then
+    if [ -n "$SLUG" ]; then q+=("agente=$(jq -rn --arg v "$SLUG" '$v|@uri')")
+    else erro "aviso: não sei qual é o meu slug (TERACLAW_SLUG vazia), então listo a mesa inteira."; todos=1; fi
+  fi
+  if tem dia; then
+    [[ "${O[dia]}" =~ ^(hoje|todos|[0-9]{4}-[0-9]{2}-[0-9]{2})$ ]] || die "--dia precisa ser hoje, todos ou uma data AAAA-MM-DD (recebido: '${O[dia]}')."
+    q+=("dia=${O[dia]}")
+  fi
+  if [ "${#q[@]}" -gt 0 ]; then rota="$rota?$(IFS='&'; echo "${q[*]}")"; fi
+  chamar GET "$rota"
+  if [ "$JSON" = 1 ]; then printf '%s\n' "$RESP"; return 0; fi
+  exigir_json
+  jq -r --arg todos "$todos" "$DEFS $FILTRO_LISTA" <<<"$RESP"
+}
+
+cmd_ajuda() {
+  sed -n '3,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
+SUB="${1:-ajuda}"
+[ $# -eq 0 ] || shift
+case "$SUB" in
+  ajuda|-h|--help) cmd_ajuda; exit 0 ;;
+  criar|atualizar|passo|pedir|travar|retomar|concluir|cancelar|vivo|ver|listar) "cmd_$SUB" "$@" ;;
+  *) die "subcomando desconhecido: '$SUB'. Use criar, atualizar, passo, pedir, travar, retomar, concluir, cancelar, vivo, ver, listar ou ajuda." ;;
+esac

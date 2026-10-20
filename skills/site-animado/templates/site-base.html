@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Café &amp; Cia | O café que move o mundo</title>
+<meta name="description" content="Grãos selecionados, torra na semana e entrega na sua porta.">
+<!-- Fontes opcionais: sem internet o fallback do sistema assume. -->
+<link rel="stylesheet" media="print" onload="this.media='all'" href="https://fonts.googleapis.com/css2?family=Fira+Sans:wght@500;700;800&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* ==================== DESIGN SYSTEM (troque SÓ este bloco para outra marca) ==================== */
+:root{
+  --bg:#0B0908;            /* fundo principal */
+  --surface:#2C2724;       /* cartões e painéis */
+  --light:#F4F3EE;         /* seção clara (contraste de ritmo) */
+  --text:#F4F3EE;         /* texto sobre fundo escuro */
+  --ink:#1B1613;           /* texto sobre fundo claro */
+  --muted:#B1ADA1;         /* texto secundário */
+  --accent:#E26546;        /* cor de destaque */
+  --accent-2:#FFFCA3;      /* segunda cor de destaque */
+  --on-accent:#0B0908;     /* texto sobre destaque */
+  --font-title:'Fira Sans','Segoe UI',system-ui,-apple-system,Roboto,sans-serif;
+  --font-body:'Inter','Segoe UI',system-ui,-apple-system,Roboto,sans-serif;
+  --radius:28px;
+  --space:clamp(72px,12vw,160px);     /* respiro vertical entre seções */
+  --gutter:clamp(20px,5vw,80px);      /* margem lateral */
+  --ease:cubic-bezier(.65,0,.35,1);
+  --ease-out:cubic-bezier(.16,1,.3,1);
+  --dur:800ms;
+}
+/* ==================== FIM DO DESIGN SYSTEM ==================== */
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{overflow-x:clip;scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font:400 clamp(16px,1.1vw + 10px,20px)/1.6 var(--font-body);overflow-x:clip}
+h1,h2,h3{font-family:var(--font-title);font-weight:800;line-height:1.04;letter-spacing:-.02em}
+h1{font-size:clamp(44px,9vw,148px)}
+h2{font-size:clamp(34px,6vw,88px)}
+h3{font-size:clamp(22px,2.4vw,34px);line-height:1.15}
+p{max-width:60ch}
+.wrap{max-width:1360px;margin:0 auto;padding:0 var(--gutter)}
+section,header{position:relative}
+.eyebrow{font:600 13px/1 var(--font-body);letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin-bottom:22px;display:block}
+.btn{display:inline-block;padding:16px 30px;border-radius:999px;background:var(--accent);color:var(--on-accent);font-weight:600;text-decoration:none;transition:transform .5s var(--ease-out),background .3s}
+.btn:hover{transform:translateY(-3px)}
+.btn.ghost{background:transparent;color:inherit;border:1px solid currentColor}
+
+/* NAV */
+nav{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;justify-content:space-between;align-items:center;padding:18px var(--gutter);mix-blend-mode:difference;color:#fff}
+nav b{font:800 20px var(--font-title)}
+nav a{color:inherit;text-decoration:none;font-size:15px;margin-left:22px}
+#progress{position:fixed;left:0;top:0;height:3px;width:100%;background:var(--accent);transform-origin:0 0;transform:scaleX(0);z-index:30}
+
+/* HERO */
+.hero{min-height:100svh;display:flex;align-items:center;overflow:hidden;padding:120px 0 80px}
+.hero .blob{position:absolute;border-radius:50%;pointer-events:none;will-change:transform}
+.hero .b1{width:min(70vw,820px);aspect-ratio:1;background:var(--accent);right:-18vw;top:8vh}
+.hero .b2{width:min(30vw,320px);aspect-ratio:1;background:var(--accent-2);right:6vw;bottom:5vh;opacity:.9}
+.hero .wrap{position:relative;z-index:2}
+.hero p.lead{margin:32px 0 40px;color:var(--muted);font-size:clamp(18px,1.6vw,24px)}
+.hero .row{display:flex;gap:14px;flex-wrap:wrap}
+.hint{position:absolute;bottom:24px;left:var(--gutter);font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);z-index:2}
+
+/* palavras que entram */
+.w{display:inline-block;overflow:hidden;vertical-align:top;padding-bottom:.12em;margin-bottom:-.12em}
+.w>span{display:inline-block;transform:translateY(110%);transition:transform var(--dur) var(--ease-out);transition-delay:calc(var(--k)*60ms)}
+.in .w>span,.w.in>span{transform:none}
+
+/* revelar */
+.reveal{opacity:0;transform:translateY(48px);transition:opacity var(--dur) var(--ease-out),transform var(--dur) var(--ease-out);transition-delay:var(--d,0ms)}
+.reveal.in{opacity:1;transform:none}
+
+/* MANIFESTO: palavras acendem com o scroll */
+.manifesto{padding:var(--space) 0;background:var(--light);color:var(--ink)}
+.manifesto p{max-width:22ch;font:800 clamp(30px,5.4vw,84px)/1.08 var(--font-title);letter-spacing:-.02em}
+.manifesto p .t{opacity:.16;transition:opacity .3s}
+.manifesto p .t.on{opacity:1}
+
+/* NÚMEROS */
+.stats{padding:var(--space) 0}
+.stats .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(16px,3vw,40px);margin-top:56px}
+.stat{border-top:1px solid #ffffff30;padding-top:24px}
+.stat b{display:block;font:800 clamp(48px,8vw,120px)/1 var(--font-title);color:var(--accent-2);font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted)}
+
+/* STICKY com troca de conteúdo */
+.pin{height:320vh;background:var(--surface)}
+.pin .stick{position:sticky;top:0;height:100svh;display:flex;align-items:center;overflow:hidden}
+.pin .cols{display:grid;grid-template-columns:1fr 1fr;gap:clamp(24px,6vw,100px);align-items:center;width:100%}
+.pin .steps{position:relative;min-height:clamp(200px,30vh,320px)}
+.pin .step{position:absolute;inset:0 0 auto 0;opacity:0;transform:translateY(40px);transition:opacity .6s var(--ease-out),transform .8s var(--ease-out);pointer-events:none}
+.pin .step.on{opacity:1;transform:none}
+.pin .step h3{font-size:clamp(30px,4.4vw,64px);margin-bottom:16px}
+.pin .step p{color:var(--muted)}
+.pin .visual{position:relative;aspect-ratio:1;max-height:62vh;justify-self:center;width:100%;max-width:520px}
+.pin .shape{position:absolute;inset:0;background:var(--accent);border-radius:50%;transition:background .8s var(--ease),border-radius .8s var(--ease),transform .8s var(--ease)}
+.pin .shape small{position:absolute;inset:0;display:grid;place-items:center;font:800 clamp(64px,14vw,200px) var(--font-title);color:var(--on-accent)}
+.dots{display:flex;gap:10px;margin-top:36px}
+.dots i{width:34px;height:4px;border-radius:2px;background:#ffffff30;transition:background .4s,width .4s}
+.dots i.on{background:var(--accent);width:64px}
+
+/* CARTÕES */
+.cards{padding:var(--space) 0}
+.cards .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(14px,2vw,28px);margin-top:56px}
+.card{background:var(--surface);border-radius:var(--radius);padding:clamp(24px,3vw,44px);min-height:clamp(220px,28vw,360px);display:flex;flex-direction:column;justify-content:flex-end;gap:10px}
+.card:nth-child(2){background:var(--accent);color:var(--on-accent)}
+.card:nth-child(3){background:var(--accent-2);color:var(--on-accent)}
+.card p{opacity:.8}
+
+/* CTA */
+.cta{padding:var(--space) 0;background:var(--accent);color:var(--on-accent);text-align:center}
+.cta h2{margin:0 auto 36px;max-width:16ch}
+.cta .btn{background:var(--on-accent);color:var(--accent-2)}
+footer{padding:28px var(--gutter);color:var(--muted);font-size:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+
+/* parallax e animações atreladas ao scroll (quando o navegador suporta) */
+@supports (animation-timeline:view()){
+  html.sd .reveal{opacity:1;transform:none;transition:none;animation:sd-in linear both;animation-timeline:view();animation-range:entry 0% entry 55%}
+  @keyframes sd-in{from{opacity:0;transform:translateY(60px)}to{opacity:1;transform:none}}
+  html.sd [data-parallax]{animation:sd-par linear both;animation-timeline:view();animation-range:cover 0% cover 100%}
+  @keyframes sd-par{from{transform:translateY(calc(var(--p,.2)*-120px))}to{transform:translateY(calc(var(--p,.2)*120px))}}
+}
+
+@media (max-width:760px){
+  .stats .grid,.cards .grid{grid-template-columns:1fr}
+  .stat{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  .pin{height:300vh}
+  .pin .cols{grid-template-columns:1fr;gap:20px}
+  .pin .visual{max-height:34vh;order:-1;max-width:260px}
+  .pin .steps{min-height:230px}
+  nav a{display:none}
+  .hero .b2{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *{animation:none!important;transition-duration:.01ms!important;transition-delay:0ms!important}
+  .reveal,.w>span{opacity:1;transform:none}
+  .manifesto p .t{opacity:1}
+}
+</style>
+</head>
+<body>
+<div id="progress"></div>
+<nav><b>Café &amp; Cia</b><div><a href="#numeros">Números</a><a href="#jeitos">Jeitos</a><a href="#assine">Assinar</a></div></nav>
+
+<!-- 1. HERO -->
+<header class="hero">
+  <div class="blob b1" data-parallax data-p=".35"></div>
+  <div class="blob b2" data-parallax data-p=".7"></div>
+  <div class="wrap">
+    <span class="eyebrow reveal">Torra na semana</span>
+    <h1 data-words>O café que move o mundo</h1>
+    <p class="lead reveal" style="--d:500ms">Grãos selecionados, torrados em pequenos lotes e entregues na sua porta em até 3 dias.</p>
+    <div class="row reveal" style="--d:650ms"><a class="btn" href="#assine">Quero provar</a><a class="btn ghost" href="#jeitos">Ver os jeitos</a></div>
+  </div>
+  <span class="hint">Role para descobrir</span>
+</header>
+
+<!-- 2. MANIFESTO (as palavras acendem conforme você rola) -->
+<section class="manifesto">
+  <div class="wrap"><p id="manifesto">Um bom café não precisa de pressa. Precisa de grão fresco, água na temperatura certa e alguns minutos de atenção.</p></div>
+</section>
+
+<!-- 3. NÚMEROS -->
+<section class="stats" id="numeros">
+  <div class="wrap">
+    <span class="eyebrow reveal">Em números</span>
+    <h2 data-words>Uma xícara vira um hábito mundial</h2>
+    <div class="grid">
+      <div class="stat reveal"><b data-count="2.2" data-dec="1" data-suffix=" bi">0</b><span>de xícaras servidas por dia no mundo</span></div>
+      <div class="stat reveal" style="--d:120ms"><b data-count="92" data-suffix="°C">0</b><span>a temperatura ideal da água</span></div>
+      <div class="stat reveal" style="--d:240ms"><b data-count="3" data-suffix=" dias">0</b><span>da torra até a sua porta</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 4. STICKY: o conteúdo troca conforme você rola -->
+<section class="pin" id="pin">
+  <div class="stick"><div class="wrap cols">
+    <div>
+      <span class="eyebrow">Do grão à xícara</span>
+      <div class="steps">
+        <div class="step on"><h3>1. Escolha do grão</h3><p>Lotes de pequenas fazendas, provados um a um antes de entrar na nossa torra.</p></div>
+        <div class="step"><h3>2. Torra na semana</h3><p>Torramos em pequenos lotes para o café chegar com aroma e sabor no auge.</p></div>
+        <div class="step"><h3>3. Moagem na hora</h3><p>Você escolhe o preparo e moemos do jeito certo, ou entregamos em grãos.</p></div>
+      </div>
+      <div class="dots"><i class="on"></i><i></i><i></i></div>
+    </div>
+    <div class="visual"><div class="shape" id="shape"><small id="shapeN">1</small></div></div>
+  </div></div>
+</section>
+
+<!-- 5. CARTÕES -->
+<section class="cards" id="jeitos">
+  <div class="wrap">
+    <span class="eyebrow reveal">Preparos</span>
+    <h2 data-words>Três jeitos de preparar</h2>
+    <div class="grid">
+      <article class="card reveal"><h3>Espresso</h3><p>Pressão, rapidez e crema. A base das cafeterias.</p></article>
+      <article class="card reveal" style="--d:120ms"><h3>Coado</h3><p>Leve, limpo e o mais comum nas casas do Brasil.</p></article>
+      <article class="card reveal" style="--d:240ms"><h3>Prensa francesa</h3><p>Imersão total, com corpo cheio e sabor intenso.</p></article>
+    </div>
+  </div>
+</section>
+
+<!-- 6. CTA -->
+<section class="cta" id="assine">
+  <div class="wrap"><h2 data-words>Seu próximo café começa aqui</h2><a class="btn" href="#">Assinar agora</a></div>
+</section>
+<footer><span>Café &amp; Cia</span><span>Feito com carinho, grão por grão.</span></footer>
+
+<script>
+(()=>{
+const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const doc=document.documentElement;
+const sdOK=CSS.supports('animation-timeline: view()') && !reduced;
+if(sdOK) doc.classList.add('sd');
+
+/* palavras: separa em spans para entrar uma a uma */
+document.querySelectorAll('[data-words]').forEach(el=>{
+  const words=el.textContent.trim().split(/\s+/);
+  el.setAttribute('aria-label',el.textContent.trim());
+  el.innerHTML=words.map((w,i)=>`<span class="w" aria-hidden="true"><span style="--k:${i}">${w}</span></span>`).join(' ');
+});
+/* manifesto: palavras acendem com o scroll */
+const man=document.getElementById('manifesto');
+const mw=man.textContent.trim().split(/\s+/);
+man.setAttribute('aria-label',man.textContent.trim());
+man.innerHTML=mw.map(w=>`<span class="t" aria-hidden="true">${w}</span>`).join(' ');
+const ts=[...man.querySelectorAll('.t')];
+
+/* revelar ao entrar na tela (IntersectionObserver; também é o fallback dos reveals CSS) */
+const io=new IntersectionObserver(es=>es.forEach(e=>{
+  if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); if(e.target.querySelector&&e.target.querySelector('[data-count]'))count(e.target); }
+}),{threshold:.2,rootMargin:'0px 0px -8% 0px'});
+document.querySelectorAll('.reveal,[data-words]').forEach(el=>{ if(reduced) el.classList.add('in'); else io.observe(el); });
+
+/* números que contam */
+function count(root){
+  root.querySelectorAll('[data-count]').forEach(el=>{
+    if(el.dataset.done) return; el.dataset.done=1;
+    const to=parseFloat(el.dataset.count), dec=+el.dataset.dec||0, suf=el.dataset.suffix||'';
+    const fmt=v=>v.toFixed(dec).replace('.',',')+suf;
+    if(reduced){ el.textContent=fmt(to); return; }
+    const t0=performance.now(), D=1600;
+    (function f(t){ const k=Math.min(1,(t-t0)/D), e=1-Math.pow(1-k,4); el.textContent=fmt(to*e); if(k<1) requestAnimationFrame(f); })(t0);
+  });
+}
+const cio=new IntersectionObserver(es=>es.forEach(e=>{ if(e.isIntersecting){ count(e.target); cio.unobserve(e.target);} }),{threshold:.4});
+document.querySelectorAll('.stat').forEach(s=>cio.observe(s));
+
+/* scroll: barra, parallax (fallback JS), manifesto e seção sticky */
+const pin=document.getElementById('pin'), steps=[...pin.querySelectorAll('.step')], dots=[...pin.querySelectorAll('.dots i')];
+const shape=document.getElementById('shape'), shapeN=document.getElementById('shapeN');
+const look=[['var(--accent)','50%','none'],['var(--accent-2)','12%','rotate(8deg)'],['var(--light)','38% 62% 55% 45%','rotate(-6deg) scale(.94)']];
+let cur=-1, ticking=false;
+const par=[...document.querySelectorAll('[data-parallax]')];
+function frame(){
+  ticking=false;
+  const y=scrollY, H=innerHeight;
+  document.getElementById('progress').style.transform=`scaleX(${y/Math.max(1,doc.scrollHeight-H)})`;
+  if(!sdOK && !reduced) par.forEach(p=>{ p.style.transform=`translateY(${y*(parseFloat(p.dataset.p)||.2)*-.25}px)`; });
+  const mr=man.getBoundingClientRect();
+  const mp=Math.min(1,Math.max(0,(H*.8-mr.top)/(mr.height+H*.3)));
+  const n=Math.round(mp*ts.length);
+  ts.forEach((t,i)=>t.classList.toggle('on',reduced||i<n));
+  const pr=pin.getBoundingClientRect();
+  const prog=Math.min(.999,Math.max(0,-pr.top/(pr.height-H)));
+  const idx=Math.floor(prog*steps.length);
+  if(idx!==cur){
+    cur=idx;
+    steps.forEach((s,i)=>s.classList.toggle('on',i===idx));
+    dots.forEach((d,i)=>d.classList.toggle('on',i===idx));
+    const [bg,br,tf]=look[idx]; shape.style.background=bg; shape.style.borderRadius=br; shape.style.transform=tf;
+    shapeN.textContent=idx+1;
+  }
+}
+addEventListener('scroll',()=>{ if(!ticking){ticking=true;requestAnimationFrame(frame);} },{passive:true});
+addEventListener('resize',frame);
+frame();
+})();
+</script>
+</body>
+</html>

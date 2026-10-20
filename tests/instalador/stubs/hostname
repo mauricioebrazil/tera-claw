@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo "${TERACLAW_STUB_HOSTNAME:-vps-teste}"

@@ -1,0 +1,153 @@
+# Como contribuir com o Tera Claw
+
+Obrigado por querer ajudar. Este guia diz como rodar os testes, que convenções seguir, como abrir
+uma issue ou um pull request e o que todo painel precisa entregar junto com o código.
+
+## Baixar o projeto
+
+```
+git clone https://github.com/mauricioebrazil/tera-claw
+cd tera-claw
+```
+
+## Rodar os testes
+
+O caminho principal é um só:
+
+```
+tests/rodar.sh
+```
+
+Ele roda tudo. Se você quer rodar uma parte, estes são os comandos individuais:
+
+| O que | Comando |
+| --- | --- |
+| CLI (`bin/teraclaw`) | `bash tests/cli/rodar.sh` |
+| `teraclaw-agente` | `bash bin/test/teraclaw-agente.test.sh` |
+| Tera Claw Web | `node --test web/test/` |
+| Painel | `cd panel && npm install`, depois `node test-<nome>.mjs` para cada arquivo `panel/test-*.mjs` |
+| Runner | `cd runner && npm ci && npx tsc --noEmit` |
+| Scripts em Python | `cd scripts/_lib && python3 test_<nome>.py` para cada `test_*.py` |
+| Shell | `shellcheck` nos scripts que você mexeu |
+
+Três observações:
+
+- Os testes do painel precisam do `npm install` dentro de `panel/` antes. O `panel/test-provedor.mjs`
+  testa os provedores de verdade e só roda com as chaves `TERACLAW_TESTE_CHAVE_*` no ambiente. Sem elas
+  ele sai com código 3, e isso conta como teste pulado, não como falha.
+- Os testes em Python rodam como script (`python3 test_quarentena.py`). O `python3 -m unittest
+  discover` carrega os arquivos como módulos e o `test_quarentena.py` encerra o processo na hora
+  da importação, então use a execução direta.
+- Os testes do instalador e da CLI usam a variável `TERACLAW_RAIZ` para trabalhar numa raiz falsa, com
+  comandos de mentira no PATH. Não precisam de root e não alteram a sua máquina.
+
+O CI em `.github/workflows/ci.yml` roda os mesmos testes a cada push e a cada pull request. Se ele
+ficar vermelho, a causa está no log do job que falhou.
+
+## Convenções
+
+- Português do Brasil em todo texto voltado a pessoas. Os comentários no código explicam o porquê,
+  não o que a linha faz.
+- Bash com `set -euo pipefail`, em funções, com `shellcheck` limpo.
+- Toda falha diz o que falhou, com que entrada e o que a pessoa deve fazer. Sem `|| true` mudo.
+- Segredos ficam fora de argumentos de comando (argv), de logs e do repositório. Arquivos de segredo
+  têm permissão 600.
+- Commits só com os arquivos da própria mudança, nomeados um a um. Nada de `git add -A`.
+- Toda feature nova que o agente precisa conhecer para usar ou oferecer entra TAMBÉM em
+  `templates/ambiente/agente.md` (e em `admin.md`, se o Admin a usa), no mesmo commit/PR. Feature
+  puramente visual que o agente não usa (por exemplo, animação de carregando) não precisa. Doc de
+  capacidade novo entra também em `templates/ambiente/capacidades.txt`.
+
+## Padrão de commit
+
+Os commits seguem o [Conventional Commits](https://www.conventionalcommits.org/pt-br/v1.0.0/),
+escritos em português:
+
+```
+tipo(escopo opcional): descrição curta
+```
+
+- **Tipos:** `feat` (funcionalidade nova), `fix` (correção), `docs` (só documentação),
+  `refactor` (muda o código sem mudar o comportamento), `test` (testes), `ci` (workflows e
+  automação do GitHub), `chore` (manutenção que não cabe nos outros) e `perf` (desempenho).
+- **Escopo** é opcional e diz a área: `runner`, `painel`, `web`, `cli`, `cofre`, `instalador`.
+- **Descrição** no presente ou no imperativo, em português, começando em minúscula, sem ponto
+  final e dizendo o que a mudança faz.
+- Um commit por entrega. Se a mudança tem duas partes que se explicam sozinhas, são dois commits.
+- Quando houver coautoria (por exemplo, trabalho feito com um assistente de IA), a última linha é um
+  `Co-Authored-By: Nome <e-mail>`, depois de uma linha em branco.
+
+Exemplos:
+
+```
+feat(painel): mostra a cobertura de testes na aba Saúde
+fix(runner): recusa token com quebra de linha no meio
+docs: explica como restaurar um backup
+refactor(web): separa a leitura do cofre em função própria
+test(cli): cobre o teraclaw atualizar com a raiz falsa
+ci: fixa as actions pelo SHA do commit
+chore: remove nomes pessoais de comentários
+perf(web): lê a lista de conversas uma vez só
+```
+
+A `main` é protegida: ninguém grava nela direto. Toda mudança entra por pull request, com os checks
+do CI verdes. O merge é do tipo squash, então o **título do pull request vira a mensagem do commit
+na `main`** e precisa seguir o padrão acima. Os commits da sua branch podem ser livres, mas o título
+do PR não.
+
+## Abrir uma issue
+
+Antes de abrir, procure se já existe uma igual. Na issue, inclua:
+
+- a versão do Tera Claw e o sistema do servidor (por exemplo, Ubuntu 24.04);
+- o que você fez, passo a passo;
+- o que você esperava que acontecesse e o que aconteceu de fato;
+- a saída de `teraclaw status`.
+
+Antes de colar qualquer saída, leia com atenção e apague senhas, chaves de API, tokens e endereços
+que você não quer expor.
+
+**Vulnerabilidades não vão em issue pública.** Se você achou uma falha de segurança, siga o
+[SECURITY.md](SECURITY.md).
+
+## Abrir um pull request
+
+1. Crie a sua branch a partir da `main`.
+2. Faça uma mudança por pull request. Mudanças grandes e misturadas demoram mais para revisar.
+3. Rode `tests/rodar.sh` e confirme que passa. Se a mudança precisa de teste novo, ele vai no mesmo
+   pull request.
+4. Descreva o que mudou e por quê. Se mexeu em tela do painel, diga como conferir (veja a regra
+   abaixo).
+5. Espere a revisão adversarial de segurança (próxima seção). O merge só acontece com ela limpa e
+   com o ok de quem mantém o projeto.
+
+## Revisão adversarial de segurança (obrigatória)
+
+Todo pull request, inclusive os só de documentação, passa por uma revisão adversarial feita pelo
+Codex (o agente de código da OpenAI) antes do merge. Ele lê a mudança procurando como quebrá-la:
+injeção de comando ou de prompt, segredo em argumento, log ou resposta, permissão errada, rota sem
+autenticação, path traversal, execução de coisa baixada, XSS no painel e dado sensível no
+repositório. Cada ponto que ele aponta é corrigido ou recusado com justificativa escrita, e a revisão
+roda de novo até sair limpa. O resultado fica registrado no corpo do PR, na seção "Revisão
+adversarial (Codex)".
+
+Você não precisa ter o Codex: quem mantém roda a revisão e comenta no PR. Se tiver, o roteiro e o
+comando estão em [docs/REVISAO-ADVERSARIAL.md](docs/REVISAO-ADVERSARIAL.md), e rodar antes de abrir o
+PR acelera tudo.
+
+## Regra do painel: nada nasce mudo
+
+O painel é usado por quem é dono do agente, uma pessoa que não é desenvolvedora. Uma tela que
+funciona mas que o dono não entende está entregue pela metade. Por isso, **toda alteração no painel
+entrega três coisas junto com o código**. Sem as três, a mudança não está terminada:
+
+1. **Tooltip em todo rótulo que não se explica sozinho.** Vale para nome de aba, de seção, de
+   métrica, de estado e de botão. O texto responde o que aquilo é e, quando for número, como ele é
+   calculado.
+2. **Tutorial na página.** Um botão `Tutorial` ao lado do título e um `?` em cada seção, com
+   holofote sobre o elemento e o resto da tela apagado. Cada passo responde o que é, como se
+   calcula e por que está ali.
+3. **Documentação.** O que a tela faz, de onde vem o dado e o que o dono decide a partir dela.
+
+O teste de aceite é uma pergunta: um leigo, sozinho, sem perguntar nada a ninguém, entende o que a
+tela mostra e o que deve fazer com isso? Se a resposta depende de alguém explicar, falta terminar.
